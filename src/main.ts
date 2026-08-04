@@ -1962,15 +1962,16 @@ program
 program
   .command('watch')
   .description('Watch new Codex requests and log token usage and costs in real time')
-  .option('--output <path>', 'JSONL output path (default: ~/.cache/codeburn/codex-usage.jsonl)')
+  .option('--output <path>', 'Write records to this file instead of stdout')
+  .option('--format <format>', 'Output format: json, human, or date-style tokens (default: json)', 'json')
   .option('--poll <seconds>', 'Polling interval in seconds', parseNumber, 1)
-  .action(async (opts: { output?: string; poll: number }) => {
+  .action(async (opts: { output?: string; format: string; poll: number }) => {
     if (!Number.isFinite(opts.poll) || opts.poll <= 0) {
       console.error('watch: --poll must be greater than zero')
       process.exitCode = 2
       return
     }
-    await runCodexWatch({ outputPath: opts.output, pollSeconds: opts.poll })
+    await runCodexWatch({ outputPath: opts.output, format: opts.format, pollSeconds: opts.poll })
   })
 
 program
