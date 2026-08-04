@@ -4,11 +4,8 @@ CodeBurn requires Node.js 22.13 or newer.
 
 ## Install From This Repository (Recommended)
 
-This is the complete installation for the current checkout. Run the commands
-from the CodeBurn repository directory. The CLI must be built before it is
-installed. Install the packed `.tgz` file below;
-do not run `npm install --global .` because npm can link the source directory,
-which does not reliably expose the built CLI through `PATH`.
+This is the complete installation for the current checkout. Run the installer
+from the CodeBurn repository directory:
 
 With NVM, run:
 
@@ -17,38 +14,14 @@ nvm install 22
 nvm use 22
 
 cd /path/to/codeburn
-npm ci --ignore-scripts
-npm run build:cli
-
-NVM_PREFIX="$(dirname "$NVM_BIN")"
-PACKAGE_DIR="$(mktemp -d)"
-
-# Remove an older linked/global install in this Node environment.
-npm uninstall --global --prefix "$NVM_PREFIX" codeburn 2>/dev/null || true
-
-npm pack --pack-destination "$PACKAGE_DIR"
-npm install --global --prefix "$NVM_PREFIX" "$PACKAGE_DIR"/codeburn-*.tgz
-
-export PATH="$NVM_BIN:$PATH"
-hash -r  # Bash; use rehash in zsh
-test -x "$NVM_BIN/codeburn"
-command -v codeburn
+bash ./install.sh
 ```
 
-The package step is intentional: it installs the built `dist/` files instead
-of linking the source directory. The `test` command fails immediately if npm
-did not create the executable in the active Node installation.
-
-If npm reports a global prefix different from the active NVM installation,
-check it with:
-
-```bash
-npm prefix --global
-echo "$NVM_PREFIX"
-```
-
-Use the explicit `--prefix "$NVM_PREFIX"` shown above so the executable is
-installed into the active Node version's `bin` directory.
+The script installs dependencies, builds the CLI, packages the built `dist/`
+files, installs the package into the active NVM version, removes stale linked
+installs, refreshes the shell command hash, and verifies the executable.
+If it prints a `PATH` line, add that line to `~/.bashrc` or `~/.zshrc` and
+open a new shell.
 
 ## Optional: Install The Published Release
 
@@ -59,16 +32,13 @@ any directory after selecting the Node version you want to use:
 ```bash
 nvm install 22
 nvm use 22
-NVM_PREFIX="$(dirname "$NVM_BIN")"
-npm install --global --prefix "$NVM_PREFIX" codeburn
-export PATH="$NVM_BIN:$PATH"
-hash -r  # Bash; use rehash in zsh
-test -x "$NVM_BIN/codeburn"
+npm install --global codeburn
 ```
 
-Do not use the shorter `npm install --global codeburn` command unless
-`npm prefix --global` is already the active Node installation and its `bin`
-directory is already in `PATH`.
+This installs the release currently available from the registry, not the
+checkout. If the command is not found afterward, add npm's global bin to your
+`PATH` with `export PATH="$(npm prefix --global)/bin:$PATH"`, then run
+`hash -r` in Bash or `rehash` in zsh.
 
 ## Verify
 
