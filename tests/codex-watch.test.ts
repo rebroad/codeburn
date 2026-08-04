@@ -169,6 +169,18 @@ describe('Codex live usage processing', () => {
     expect(record?.credits).toBeNull()
   })
 
+  it('resolves a Codex catalog alias before billing', () => {
+    const state: CodexWatchState = {
+      model: 'codex-auto-review',
+      modelAliases: { 'codex-auto-review': 'gpt-5.6-luna' },
+    }
+    const record = processCodexLine(state, rawResponse('resp-alias', {
+      input_tokens: 100, output_tokens: 40, total_tokens: 140,
+    }), '/rollout.jsonl')
+    expect(record).toMatchObject({ model: 'gpt-5.6-luna', costUsd: expect.any(Number) })
+    expect(record?.credits).toBeCloseTo(0.0017, 8)
+  })
+
   it('does not assume a model when the rollout omits model metadata', () => {
     const state: CodexWatchState = {}
     const record = processCodexLine(state, rawResponse('resp-no-model', {
