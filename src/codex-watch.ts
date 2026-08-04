@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { calculateCost, getModelCosts } from './models.js'
-import { codexCostUsd, codexCreditRate, codexCredits, refreshCodexPricing } from './codex-credits.js'
+import { codexCostUsd, codexCreditRate, refreshCodexPricing } from './codex-credits.js'
 
 type TokenUsage = {
   input_tokens?: number
@@ -68,21 +68,6 @@ function numberValue(value: unknown): number {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined
-}
-
-function usageSignature(usage: TokenUsage): string {
-  return [
-    usage.total_tokens ?? 0,
-    usage.input_tokens ?? 0,
-    usage.cached_input_tokens ?? 0,
-    usage.cache_write_input_tokens ?? 0,
-    usage.output_tokens ?? 0,
-    usage.reasoning_output_tokens ?? 0,
-  ].join(':')
-}
-
-function delta(current: unknown, previous: unknown): number {
-  return Math.max(0, numberValue(current) - numberValue(previous))
 }
 
 export function processCodexLine(
@@ -179,99 +164,10 @@ export function processCodexLine(
     }
   }
 
-  if (entry['type'] !== 'event_msg' || payload['type'] !== 'token_count') return null
-  // TokenCountEvent is a cumulative/context snapshot. Retain it only as an
-  // explicitly estimated compatibility path for old rollouts without raw
-  // completion events.
-  if (state.sawRawResponse) return null
-
-  const info = payload['info'] as Record<string, unknown> | undefined
-  if (!info) return null
-  const rawLast = info['last_token_usage'] as TokenUsage | undefined
-  const last = rawLast && Object.values(rawLast).some(value => typeof value === 'number') ? rawLast : undefined
-  const total = info['total_token_usage'] as TokenUsage | undefined
-  const infoModel = stringValue(info['model']) ?? stringValue(info['model_name'])
-  if (infoModel) state.model = infoModel
-
-  if (total) {
-    const signature = usageSignature(total)
-    if (signature === state.lastSignature) return null
-    state.lastSignature = signature
-  }
-
-  let inputTokens: number
-  let cachedInputTokens: number
-  let cacheWriteTokens: number
-  let outputTokens: number
-  let reasoningTokens: number
-  if (last) {
-    inputTokens = numberValue(last.input_tokens)
-    cachedInputTokens = numberValue(last.cached_input_tokens)
-    cacheWriteTokens = numberValue(last.cache_write_input_tokens)
-    outputTokens = numberValue(last.output_tokens)
-    reasoningTokens = numberValue(last.reasoning_output_tokens)
-  } else if (total) {
-    inputTokens = delta(total.input_tokens, state.previous?.input_tokens)
-    cachedInputTokens = delta(total.cached_input_tokens, state.previous?.cached_input_tokens)
-    cacheWriteTokens = delta(total.cache_write_input_tokens, state.previous?.cache_write_input_tokens)
-    outputTokens = delta(total.output_tokens, state.previous?.output_tokens)
-    reasoningTokens = delta(total.reasoning_output_tokens, state.previous?.reasoning_output_tokens)
-  } else {
-    return null
-  }
-
-  if (total) state.previous = total
-  const normalizedInput = Math.max(0, inputTokens - cachedInputTokens)
-  const resolvedModel = state.model ?? 'unknown'
-  const creditTokens = {
-    inputTokens: normalizedInput,
-    cachedReadTokens: cachedInputTokens,
-    cacheWriteTokens,
-    outputTokens,
-    reasoningTokens,
-  }
-  const credits = codexCredits(resolvedModel, creditTokens)
-  const genericCosts = getModelCosts(resolvedModel)
-  const hasGenericPrice = genericCosts !== null && (
-    genericCosts.inputCostPerToken > 0
-    || genericCosts.outputCostPerToken > 0
-    || genericCosts.cacheWriteCostPerToken > 0
-    || genericCosts.cacheReadCostPerToken > 0
-  )
-  const costUsd = codexCreditRate(resolvedModel)
-    ? codexCostUsd(resolvedModel, creditTokens)
-    : hasGenericPrice ? calculateCost(
-      resolvedModel,
-      normalizedInput,
-      outputTokens,
-      cacheWriteTokens,
-      cachedInputTokens,
-      0,
-    ) : null
-  const eventId = createHash('sha256').update(JSON.stringify([
-    source, state.sessionId ?? '', entry['timestamp'] ?? '', normalizedInput,
-    cachedInputTokens, cacheWriteTokens, outputTokens, reasoningTokens,
-  ])).digest('hex')
-
-  return {
-    loggedAt: new Date().toISOString(),
-    timestamp: stringValue(entry['timestamp']) ?? new Date().toISOString(),
-    sessionId: state.sessionId ?? null,
-    projectPath: state.projectPath ?? null,
-    model: resolvedModel,
-    inputTokens: normalizedInput,
-    cachedInputTokens,
-    cacheWriteTokens,
-    outputTokens,
-    reasoningTokens,
-    totalTokens: inputTokens + cachedInputTokens + cacheWriteTokens + outputTokens + reasoningTokens,
-    costUsd,
-    credits,
-    usageSource: 'token_count_estimate',
-    usageUnknown: false,
-    eventId,
-    source,
-  }
+  // TokenCountEvent is cumulative context telemetry, not an exact billing
+  // record. Only RawResponseCompleted carries one upstream completion's
+  // authoritative token usage.
+  return null
 }
 
 const DEFAULT_HUMAN_FORMAT = '%t %m input=%i cached=%c cache_write=%w output=%o reasoning=%r cost=$%d credits=%C'
@@ -363,7 +259,12 @@ async function primeFile(filePath: string, state: FileState): Promise<void> {
         }
       }
       const info = payload['info'] as Record<string, unknown> | undefined
-      const infoModel = info && (stringValue(info['model']) ?? stringValue(info['model_name']))
+      const infoModel = info && (
+        stringValue(payload['effective_model'])
+        ?? stringValue(info['effective_model'])
+        ?? stringValue(info['model'])
+        ?? stringValue(info['model_name'])
+      )
       if (infoModel) state.usage.model = infoModel
     }
   } finally {
