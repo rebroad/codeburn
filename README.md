@@ -522,6 +522,16 @@ boolean before it leaves the machine.
 
 </details>
 
+### Live Codex usage logging
+
+Run `codeburn watch` to follow new Codex requests as they are appended to rollout files:
+
+```bash
+codeburn watch
+```
+
+The command starts at the end of existing sessions, prints each new JSON record to stdout, and appends the same records to `~/.cache/codeburn/codex-usage.jsonl`. Use `--output <path>` to choose another log file and `--poll <seconds>` to change the polling interval. Records include the timestamp, model, session/project, uncached input, cached input, output, reasoning tokens, USD cost, and Codex credits. USD follows the CodeBurn pricing engine; credits use the published Codex credit rates when the model is known.
+
 ## License
 
 MIT.

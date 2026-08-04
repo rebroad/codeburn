@@ -66,6 +66,7 @@ const STATUS_SNAPSHOT_SEMANTIC_KEY = statusSnapshotSemanticKey(version)
 import { loadCurrency, getCurrency, isValidCurrencyCode } from './currency.js'
 import { sessionCountIsExact } from './session-count-label.js'
 import { CodexThroughputReader, newestCodexSession, renderCodexThroughput } from './codex-throughput.js'
+import { runCodexWatch } from './codex-watch.js'
 
 // A downstream reader that closes the pipe early (`| head`, quitting `less`, or
 // a missing command) makes stdout writes fail with EPIPE. Exit cleanly rather
@@ -2346,6 +2347,20 @@ program
         process.once('SIGINT', () => { clearInterval(timer); resolve() })
       })
     }
+  })
+
+program
+  .command('watch')
+  .description('Watch new Codex requests and log token usage and costs in real time')
+  .option('--output <path>', 'JSONL output path (default: ~/.cache/codeburn/codex-usage.jsonl)')
+  .option('--poll <seconds>', 'Polling interval in seconds', parseNumber, 1)
+  .action(async (opts: { output?: string; poll: number }) => {
+    if (!Number.isFinite(opts.poll) || opts.poll <= 0) {
+      console.error('watch: --poll must be greater than zero')
+      process.exitCode = 2
+      return
+    }
+    await runCodexWatch({ outputPath: opts.output, pollSeconds: opts.poll })
   })
 
 program
