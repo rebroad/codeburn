@@ -38,6 +38,7 @@ export type CodexUsageRecord = {
 export type CodexWatchOptions = {
   outputPath?: string
   pollSeconds?: number
+  format?: string
 }
 
 type FileState = {
@@ -48,11 +49,6 @@ type FileState = {
 
 function codexHome(): string {
   return process.env['CODEX_HOME'] ?? join(homedir(), '.codex')
-}
-
-function defaultOutputPath(): string {
-  const cacheDir = process.env['CODEBURN_CACHE_DIR'] ?? join(homedir(), '.cache', 'codeburn')
-  return join(cacheDir, 'codex-usage.jsonl')
 }
 
 function numberValue(value: unknown): number {
@@ -169,6 +165,35 @@ export function processCodexLine(
   }
 }
 
+const DEFAULT_HUMAN_FORMAT = '%t %m input=%i cached=%c output=%o reasoning=%r cost=$%d credits=%C'
+
+function displayValue(value: string | number | null): string {
+  if (value === null) return '-'
+  if (typeof value === 'number') return Number.isInteger(value) ? String(value) : value.toFixed(6)
+  return value
+}
+
+export function formatCodexUsageRecord(record: CodexUsageRecord, format: string): string {
+  if (format === 'json') return JSON.stringify(record)
+  const template = format === 'human' ? DEFAULT_HUMAN_FORMAT : format.replace(/^\+/, '')
+  const values: Record<string, string | number | null> = {
+    '%': '%',
+    t: record.timestamp,
+    l: record.loggedAt,
+    m: record.model,
+    s: record.sessionId,
+    p: record.projectPath,
+    i: record.inputTokens,
+    c: record.cachedInputTokens,
+    o: record.outputTokens,
+    r: record.reasoningTokens,
+    d: record.costUsd,
+    C: record.credits,
+    f: record.source,
+  }
+  return template.replace(/%([%tlmspicordCf])/g, (_match, key: string) => displayValue(values[key] ?? null))
+}
+
 async function readAppended(filePath: string, state: FileState): Promise<string[]> {
   const file = await stat(filePath).catch(() => null)
   if (!file) return []
@@ -201,10 +226,28 @@ async function primeFile(filePath: string, state: FileState): Promise<void> {
   const handle = await open(filePath, 'r').catch(() => null)
   if (!handle) return
   try {
-    const buffer = Buffer.alloc(Math.min(state.offset, 1024 * 1024))
+    const buffer = Buffer.alloc(Math.min(state.offset, 4 * 1024 * 1024))
     await handle.read(buffer, 0, buffer.length, 0)
-    const firstLine = buffer.toString('utf8').split('\n', 1)[0]
-    if (firstLine) processCodexLine(state.usage, firstLine, filePath)
+    for (const line of buffer.toString('utf8').split('\n')) {
+      if (!line) continue
+      let entry: Record<string, unknown>
+      try {
+        entry = JSON.parse(line) as Record<string, unknown>
+      } catch {
+        continue
+      }
+      const payload = entry['payload'] as Record<string, unknown> | undefined
+      if (!payload) continue
+      const sessionId = stringValue(payload['session_id'])
+      const projectPath = stringValue(payload['cwd'])
+      const model = stringValue(payload['model']) ?? stringValue(payload['model_name'])
+      if (sessionId) state.usage.sessionId = sessionId
+      if (projectPath) state.usage.projectPath = projectPath
+      if (model) state.usage.model = model
+      const info = payload['info'] as Record<string, unknown> | undefined
+      const infoModel = info && (stringValue(info['model']) ?? stringValue(info['model_name']))
+      if (infoModel) state.usage.model = infoModel
+    }
   } finally {
     await handle.close()
   }
@@ -229,9 +272,10 @@ async function discoverRollouts(root: string): Promise<string[]> {
 }
 
 export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<void> {
-  const outputPath = options.outputPath ?? defaultOutputPath()
+  const outputPath = options.outputPath
+  const format = options.format ?? 'json'
   const pollMs = Math.max(250, (options.pollSeconds ?? 1) * 1000)
-  await mkdir(dirname(outputPath), { recursive: true })
+  if (outputPath) await mkdir(dirname(outputPath), { recursive: true })
 
   const files = new Map<string, FileState>()
   const registerNewFiles = async (): Promise<void> => {
@@ -253,15 +297,15 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
       for (const line of lines) {
         const record = processCodexLine(state.usage, line, path)
         if (!record) continue
-        const serialized = JSON.stringify(record) + '\n'
-        await appendFile(outputPath, serialized, 'utf8')
-        process.stdout.write(serialized)
+        const serialized = formatCodexUsageRecord(record, format) + '\n'
+        if (outputPath) await appendFile(outputPath, serialized, 'utf8')
+        else process.stdout.write(serialized)
       }
     }
   }
 
   await flush()
-  process.stderr.write(`Watching Codex sessions; logging to ${outputPath} (Ctrl-C to stop)\n`)
+  process.stderr.write(`Watching Codex sessions; ${outputPath ? `logging to ${outputPath}` : 'writing records to stdout'} (Ctrl-C to stop)\n`)
   await new Promise<void>((resolve) => {
     const timer = setInterval(() => { void flush().catch(error => process.stderr.write(`codeburn watch: ${String(error)}\n`)) }, pollMs)
     const stop = () => { clearInterval(timer); resolve() }

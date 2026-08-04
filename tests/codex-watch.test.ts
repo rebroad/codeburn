@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { processCodexLine, type CodexWatchState } from '../src/codex-watch.js'
+import { formatCodexUsageRecord, processCodexLine, type CodexWatchState } from '../src/codex-watch.js'
 
 function meta(): string {
   return JSON.stringify({
@@ -65,5 +65,38 @@ describe('Codex live usage processing', () => {
     )
     expect(processCodexLine(state, line, '/rollout.jsonl')).not.toBeNull()
     expect(processCodexLine(state, line, '/rollout.jsonl')).toBeNull()
+  })
+
+  it('preserves the exact model identifier from turn context metadata', () => {
+    const state: CodexWatchState = {}
+    processCodexLine(state, JSON.stringify({
+      type: 'turn_context',
+      payload: { model: 'gpt-5.6-luna', cwd: '/work/project', session_id: 'session-2' },
+    }), '/rollout.jsonl')
+    const record = processCodexLine(state, tokens(
+      { input_tokens: 10, output_tokens: 5 },
+      { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+    ), '/rollout.jsonl')
+    expect(record?.model).toBe('gpt-5.6-luna')
+  })
+
+  it('renders selected human-readable fields using date-style tokens', () => {
+    const record = {
+      loggedAt: '2026-08-04T12:00:01.000Z',
+      timestamp: '2026-08-04T12:00:00.000Z',
+      sessionId: 'session-1',
+      projectPath: '/work/project',
+      model: 'gpt-5.6-luna',
+      inputTokens: 600,
+      cachedInputTokens: 400,
+      outputTokens: 200,
+      reasoningTokens: 50,
+      costUsd: 0.00535,
+      credits: 0.13375,
+      source: '/rollout.jsonl',
+    }
+    expect(formatCodexUsageRecord(record, '%t %m i=%i c=%c o=%o r=%r $%d %C')).toBe(
+      '2026-08-04T12:00:00.000Z gpt-5.6-luna i=600 c=400 o=200 r=50 $0.005350 0.133750',
+    )
   })
 })
