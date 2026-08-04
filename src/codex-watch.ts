@@ -1,4 +1,4 @@
-import { appendFile, mkdir, open, readdir, stat } from 'node:fs/promises'
+import { appendFile, mkdir, open, readFile, readdir, stat } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
@@ -16,6 +16,7 @@ type TokenUsage = {
 
 export type CodexWatchState = {
   model?: string
+  modelAliases?: Record<string, string>
   sessionId?: string
   projectPath?: string
   previous?: TokenUsage
@@ -70,6 +71,42 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined
 }
 
+function catalogModelName(displayName: string): string | undefined {
+  const candidate = displayName
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9.]+/g, '-')
+    .replace(/^-|-$/g, '')
+  return codexCreditRate(candidate) ? candidate : undefined
+}
+
+async function loadCodexModelAliases(): Promise<Record<string, string>> {
+  try {
+    const parsed = JSON.parse(await readFile(join(codexHome(), 'models_cache.json'), 'utf8')) as {
+      models?: unknown
+    }
+    if (!Array.isArray(parsed.models)) return {}
+    const aliases: Record<string, string> = {}
+    for (const entry of parsed.models) {
+      if (!entry || typeof entry !== 'object') continue
+      const model = entry as Record<string, unknown>
+      const slug = stringValue(model['slug'])?.toLowerCase()
+      const displayName = stringValue(model['display_name'])
+      if (!slug || !displayName) continue
+      const canonical = catalogModelName(displayName)
+      if (canonical && canonical !== slug) aliases[slug] = canonical
+    }
+    return aliases
+  } catch {
+    return {}
+  }
+}
+
+function resolvedModel(state: CodexWatchState): string {
+  const model = state.model ?? 'unknown'
+  return state.modelAliases?.[model.toLowerCase()] ?? model
+}
+
 export function processCodexLine(
   state: CodexWatchState,
   line: string,
@@ -110,8 +147,8 @@ export function processCodexLine(
     const outputTokens = usage ? numberValue(usage.output_tokens) : 0
     const reasoningTokens = usage ? numberValue(usage.reasoning_output_tokens) : 0
     const normalizedInput = Math.max(0, inputTokens - cachedInputTokens)
-    const resolvedModel = state.model ?? 'unknown'
-    const creditRate = codexCreditRate(resolvedModel)
+    const billingModel = resolvedModel(state)
+    const creditRate = codexCreditRate(billingModel)
     const creditTokens = {
       inputTokens: normalizedInput,
       cachedReadTokens: cachedInputTokens,
@@ -121,11 +158,11 @@ export function processCodexLine(
     }
     const costUsd = usage
       ? creditRate && (cacheWriteTokens === 0 || creditRate.cacheWrite !== null)
-        ? codexCostUsd(resolvedModel, creditTokens)
+        ? codexCostUsd(billingModel, creditTokens)
         : creditRate
           ? null
-          : getModelCosts(resolvedModel) ? calculateCost(
-            resolvedModel,
+          : getModelCosts(billingModel) ? calculateCost(
+            billingModel,
             normalizedInput,
             outputTokens,
             cacheWriteTokens,
@@ -146,7 +183,7 @@ export function processCodexLine(
       timestamp: stringValue(entry['timestamp']) ?? new Date().toISOString(),
       sessionId: state.sessionId ?? null,
       projectPath: state.projectPath ?? null,
-      model: resolvedModel,
+      model: billingModel,
       inputTokens: normalizedInput,
       cachedInputTokens,
       cacheWriteTokens,
@@ -157,7 +194,7 @@ export function processCodexLine(
       // This is reconstructed consumption from the exact token usage and the
       // published per-model credit rate, not the account's balance.
       credits: usage && creditRate && (cacheWriteTokens === 0 || creditRate.cacheWrite !== null)
-        ? codexCredits(resolvedModel, creditTokens)
+        ? codexCredits(billingModel, creditTokens)
         : null,
       usageSource: 'raw_response_completed',
       usageUnknown: !usage,
@@ -209,7 +246,7 @@ async function readAppended(filePath: string, state: FileState): Promise<string[
   if (file.size < state.offset) {
     state.offset = 0
     state.pending = ''
-    state.usage = {}
+    state.usage = { modelAliases: state.usage.modelAliases }
   }
   if (file.size === state.offset) return []
 
@@ -301,6 +338,7 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
   if (outputPath) await mkdir(dirname(outputPath), { recursive: true })
   if (ledgerPath) await mkdir(dirname(ledgerPath), { recursive: true })
   await refreshCodexPricing()
+  const modelAliases = await loadCodexModelAliases()
 
   const files = new Map<string, FileState>()
   const registerNewFiles = async (): Promise<void> => {
@@ -308,7 +346,11 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
       if (files.has(path)) continue
       const file = await stat(path).catch(() => null)
       if (file) {
-        const state = { offset: file.size, pending: '', usage: {} as CodexWatchState }
+        const state = {
+          offset: file.size,
+          pending: '',
+          usage: { modelAliases } as CodexWatchState,
+        }
         await primeFile(path, state)
         files.set(path, state)
       }
