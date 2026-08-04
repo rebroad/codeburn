@@ -20,6 +20,8 @@ export type CodexWatchState = {
   projectPath?: string
   previous?: TokenUsage
   lastSignature?: string
+  sawRawResponse?: boolean
+  rawResponseIds?: Set<string>
 }
 
 export type CodexUsageRecord = {
@@ -33,8 +35,12 @@ export type CodexUsageRecord = {
   cacheWriteTokens?: number
   outputTokens: number
   reasoningTokens: number
+  totalTokens?: number
   costUsd: number | null
   credits: number | null
+  usageSource?: 'raw_response_completed' | 'token_count_estimate'
+  usageUnknown?: boolean
+  responseId?: string
   eventId?: string
   source: string
 }
@@ -103,7 +109,81 @@ export function processCodexLine(
   if (projectPath) state.projectPath = projectPath
   if (model) state.model = model
 
+  if (entry['type'] === 'event_msg' && payload['type'] === 'raw_response_completed') {
+    state.sawRawResponse = true
+    const responseId = stringValue(payload['response_id'])
+    const usage = payload['token_usage'] as TokenUsage | undefined
+    if (responseId) {
+      state.rawResponseIds ??= new Set<string>()
+      if (state.rawResponseIds.has(responseId)) return null
+      state.rawResponseIds.add(responseId)
+    }
+
+    const inputTokens = usage ? numberValue(usage.input_tokens) : 0
+    const cachedInputTokens = usage ? numberValue(usage.cached_input_tokens) : 0
+    const cacheWriteTokens = usage ? numberValue(usage.cache_write_input_tokens) : 0
+    const outputTokens = usage ? numberValue(usage.output_tokens) : 0
+    const reasoningTokens = usage ? numberValue(usage.reasoning_output_tokens) : 0
+    const normalizedInput = Math.max(0, inputTokens - cachedInputTokens)
+    const resolvedModel = state.model ?? 'unknown'
+    const creditRate = codexCreditRate(resolvedModel)
+    const creditTokens = {
+      inputTokens: normalizedInput,
+      cachedReadTokens: cachedInputTokens,
+      cacheWriteTokens,
+      outputTokens,
+      reasoningTokens,
+    }
+    const costUsd = usage
+      ? creditRate && (cacheWriteTokens === 0 || creditRate.cacheWrite !== null)
+        ? codexCostUsd(resolvedModel, creditTokens)
+        : creditRate
+          ? null
+          : getModelCosts(resolvedModel) ? calculateCost(
+            resolvedModel,
+            normalizedInput,
+            outputTokens,
+            cacheWriteTokens,
+            cachedInputTokens,
+            0,
+          )
+          : null
+      : null
+    const eventId = responseId
+      ? `codex:raw:${responseId}`
+      : createHash('sha256').update(JSON.stringify([
+        source, entry['timestamp'] ?? '', inputTokens, cachedInputTokens,
+        cacheWriteTokens, outputTokens, reasoningTokens,
+      ])).digest('hex')
+
+    return {
+      loggedAt: new Date().toISOString(),
+      timestamp: stringValue(entry['timestamp']) ?? new Date().toISOString(),
+      sessionId: state.sessionId ?? null,
+      projectPath: state.projectPath ?? null,
+      model: resolvedModel,
+      inputTokens: normalizedInput,
+      cachedInputTokens,
+      cacheWriteTokens,
+      outputTokens,
+      reasoningTokens,
+      totalTokens: usage?.total_tokens,
+      costUsd,
+      // Rollout tokens cannot establish the backend's account credit balance.
+      credits: null,
+      usageSource: 'raw_response_completed',
+      usageUnknown: !usage,
+      responseId,
+      eventId,
+      source,
+    }
+  }
+
   if (entry['type'] !== 'event_msg' || payload['type'] !== 'token_count') return null
+  // TokenCountEvent is a cumulative/context snapshot. Retain it only as an
+  // explicitly estimated compatibility path for old rollouts without raw
+  // completion events.
+  if (state.sawRawResponse) return null
 
   const info = payload['info'] as Record<string, unknown> | undefined
   if (!info) return null
@@ -163,7 +243,7 @@ export function processCodexLine(
     : hasGenericPrice ? calculateCost(
       resolvedModel,
       normalizedInput,
-      outputTokens + reasoningTokens,
+      outputTokens,
       cacheWriteTokens,
       cachedInputTokens,
       0,
@@ -184,8 +264,11 @@ export function processCodexLine(
     cacheWriteTokens,
     outputTokens,
     reasoningTokens,
+    totalTokens: inputTokens + cachedInputTokens + cacheWriteTokens + outputTokens + reasoningTokens,
     costUsd,
     credits,
+    usageSource: 'token_count_estimate',
+    usageUnknown: false,
     eventId,
     source,
   }
@@ -271,6 +354,14 @@ async function primeFile(filePath: string, state: FileState): Promise<void> {
       if (sessionId) state.usage.sessionId = sessionId
       if (projectPath) state.usage.projectPath = projectPath
       if (model) state.usage.model = model
+      if (payload['type'] === 'raw_response_completed') {
+        state.usage.sawRawResponse = true
+        const responseId = stringValue(payload['response_id'])
+        if (responseId) {
+          state.usage.rawResponseIds ??= new Set<string>()
+          state.usage.rawResponseIds.add(responseId)
+        }
+      }
       const info = payload['info'] as Record<string, unknown> | undefined
       const infoModel = info && (stringValue(info['model']) ?? stringValue(info['model_name']))
       if (infoModel) state.usage.model = infoModel
@@ -339,7 +430,7 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
             // Kept for codex-status schema compatibility. Codex does not emit
             // a separate billable prewarm token category.
             total_usage_usd_with_prewarm: record.costUsd,
-            total_tokens: record.inputTokens + record.cachedInputTokens + (record.cacheWriteTokens ?? 0) + record.outputTokens + record.reasoningTokens,
+            total_tokens: record.totalTokens,
             input_tokens: record.inputTokens,
             cached_input_tokens: record.cachedInputTokens,
             cache_write_input_tokens: record.cacheWriteTokens,
@@ -349,6 +440,9 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
             credits: record.credits,
             session_id: record.sessionId,
             source: record.source,
+            usage_source: record.usageSource,
+            usage_unknown: record.usageUnknown,
+            response_id: record.responseId,
           }) + '\n', 'utf8')
         }
         const serialized = formatCodexUsageRecord(record, format) + '\n'

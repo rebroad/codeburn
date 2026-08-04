@@ -126,6 +126,7 @@ export function countUnifiedDiffLoc(diff: unknown): { added: number; removed: nu
 
 type CodexEntry = {
   type: string
+  ordinal?: number
   timestamp?: string
   payload?: {
     type?: string
@@ -146,6 +147,12 @@ type CodexEntry = {
     parent_thread_id?: string
     source?: { subagent?: { thread_spawn?: { parent_thread_id?: string } } }
     model?: string
+    model_provider_id?: string
+    service_tier?: string
+    response_id?: string
+    token_usage?: CodexTokenUsage
+    history_base?: { thread_id?: string; end_ordinal_exclusive?: number; end_byte_offset?: number }
+    subagent_history_start_ordinal?: number
     name?: string
     invocation?: { server?: string; tool?: string }
     content?: Array<{ type?: string; text?: string }>
@@ -355,7 +362,7 @@ function durationValueMs(value: unknown): number | undefined {
   return undefined
 }
 
-function getRawTokenUsage(head: string, field: 'last_token_usage' | 'total_token_usage'): CodexTokenUsage | undefined {
+function getRawTokenUsage(head: string, field: 'last_token_usage' | 'total_token_usage' | 'token_usage'): CodexTokenUsage | undefined {
   const match = new RegExp(`"${field}"\\s*:\\s*\\{([^}]*)\\}`).exec(head)
   if (!match) return undefined
   const body = match[1]!
@@ -484,6 +491,8 @@ function parseCodexLine(line: string | Buffer): CodexEntry | null {
   const compactModelName = getRawJsonStringField(pHead, 'model_name')
   const compactLastUsage = getRawTokenUsage(pHead, 'last_token_usage')
   const compactTotalUsage = getRawTokenUsage(pHead, 'total_token_usage')
+  const compactRawUsage = getRawTokenUsage(pHead, 'token_usage')
+  const compactResponseId = getRawJsonStringField(pHead, 'response_id')
   const compactInfo = compactModel || compactModelName || compactLastUsage || compactTotalUsage
     ? { model: compactModel, model_name: compactModelName, last_token_usage: compactLastUsage, total_token_usage: compactTotalUsage }
     : undefined
@@ -491,6 +500,7 @@ function parseCodexLine(line: string | Buffer): CodexEntry | null {
 
   const entry: CodexEntry = {
     type,
+    ordinal: getRawJsonNumberField(head, 'ordinal'),
     timestamp: getRawJsonStringField(head, 'timestamp'),
     payload: {
       type: payloadType,
@@ -505,6 +515,10 @@ function parseCodexLine(line: string | Buffer): CodexEntry | null {
         : undefined,
       model: compactModel,
       name: payloadString('name'),
+      model_provider_id: getRawJsonStringField(pHead, 'model_provider_id'),
+      service_tier: getRawJsonStringField(pHead, 'service_tier'),
+      response_id: compactResponseId,
+      token_usage: compactRawUsage,
       invocation,
       call_id: getRawJsonStringField(pHead, 'call_id'),
       turn_id: getRawJsonStringField(pHead, 'turn_id'),
@@ -617,7 +631,7 @@ function firstModelString(...values: unknown[]): string | undefined {
 }
 
 function resolveModel(info: CodexEntry['payload'], sessionModel?: string): string {
-  return firstModelString(info?.model, info?.info?.model, info?.info?.model_name, sessionModel) ?? 'gpt-5'
+  return firstModelString(info?.model, info?.info?.model, info?.info?.model_name, sessionModel) ?? 'unknown'
 }
 
 // Everything the single-pass decode carries across a `task_started` boundary.
@@ -726,6 +740,10 @@ function createParser(source: SessionSource, seenKeys: Set<string>, capture?: { 
       let sessionCwd: string | undefined = resume?.state.sessionCwd
       let forkedFromId = resume?.state.forkedFromId ?? ''
       let forkCutoff = resume?.state.forkCutoff ?? ''
+      let sessionProvider: string | undefined
+      let sessionServiceTier: string | undefined
+      let sawRawResponse = false
+      let historyBaseEndOrdinal: number | undefined
       // Null sentinel rather than `0` so the FIRST event is never confused
       // with a duplicate. A session that only emits last_token_usage (no
       // total_token_usage) reports cumulativeTotal=0 on every event; with a
@@ -857,6 +875,12 @@ function createParser(source: SessionSource, seenKeys: Set<string>, capture?: { 
             if (Number.isFinite(forkBaseMs)) forkCutoff = new Date(forkBaseMs + 5000).toISOString()
           }
           if (typeof entry.payload?.model === 'string') sessionModel = entry.payload.model
+          if (typeof entry.payload?.model_provider === 'string') sessionProvider = entry.payload.model_provider
+          if (typeof entry.payload?.service_tier === 'string') sessionServiceTier = entry.payload.service_tier
+          const historyBase = entry.payload?.history_base
+          if (historyBase && typeof historyBase.end_ordinal_exclusive === 'number') {
+            historyBaseEndOrdinal = historyBase.end_ordinal_exclusive
+          }
           continue
         }
 
@@ -876,8 +900,10 @@ function createParser(source: SessionSource, seenKeys: Set<string>, capture?: { 
           if (Number.isFinite(ctxAt)) taskActiveStartedAt = ctxAt
         }
 
-        if (entry.type === 'turn_context' && typeof entry.payload?.model === 'string') {
-          sessionModel = entry.payload.model
+        if (entry.type === 'turn_context') {
+          if (typeof entry.payload?.model === 'string') sessionModel = entry.payload.model
+          if (typeof entry.payload?.model_provider_id === 'string') sessionProvider = entry.payload.model_provider_id
+          if (typeof entry.payload?.service_tier === 'string') sessionServiceTier = entry.payload.service_tier
           continue
         }
 
@@ -1100,7 +1126,112 @@ function createParser(source: SessionSource, seenKeys: Set<string>, capture?: { 
           continue
         }
 
+        if (entry.type === 'event_msg' && entry.payload?.type === 'raw_response_completed') {
+          sawRawResponse = true
+          if (historyBaseEndOrdinal !== undefined && entry.ordinal !== undefined && entry.ordinal <= historyBaseEndOrdinal) continue
+          const usage = entry.payload.token_usage
+          const responseId = entry.payload.response_id
+          const rawKey = responseId
+            ? `codex:raw:${responseId}`
+            : `codex:raw:${source.path}:${entry.ordinal ?? results.length}`
+          if (seenKeys.has(rawKey)) continue
+          seenKeys.add(rawKey)
+
+          if (!usage) {
+            pendingTaskCalls.push({
+              provider: 'codex',
+              model: resolveModel(entry.payload, sessionModel),
+              inputTokens: 0,
+              outputTokens: 0,
+              cacheCreationInputTokens: 0,
+              cacheReadInputTokens: 0,
+              cachedInputTokens: 0,
+              reasoningTokens: 0,
+              webSearchRequests: 0,
+              costUSD: 0,
+              costIsEstimated: true,
+              usageSource: 'raw_response_completed',
+              usageUnknown: true,
+              responseId,
+              requestKind: 'normal',
+              tools: pendingTools,
+              bashCommands: [],
+              timestamp: entry.timestamp ?? '',
+              speed: 'standard',
+              deduplicationKey: rawKey,
+              turnId: currentTurnId,
+              userMessage: pendingUserMessage,
+              sessionId,
+            })
+            pendingTools = []
+            pendingToolSequence = []
+            pendingUserMessage = ''
+            continue
+          }
+
+          const inputTokens = Math.max(0, usage.input_tokens ?? 0)
+          const cachedInputTokens = Math.max(0, usage.cached_input_tokens ?? 0)
+          const cacheWriteInputTokens = Math.max(0, usage.cache_write_input_tokens ?? 0)
+          const outputTokens = Math.max(0, usage.output_tokens ?? 0)
+          const reasoningTokens = Math.max(0, usage.reasoning_output_tokens ?? 0)
+          const uncachedInputTokens = Math.max(0, inputTokens - cachedInputTokens)
+          const model = resolveModel(entry.payload, sessionModel)
+          const timestamp = entry.timestamp ?? ''
+          const costUSD = calculateCost(
+            model,
+            uncachedInputTokens,
+            outputTokens,
+            cacheWriteInputTokens,
+            cachedInputTokens,
+            0,
+          )
+          pendingTaskCalls.push({
+            provider: 'codex',
+            model,
+            inputTokens: uncachedInputTokens,
+            outputTokens,
+            cacheCreationInputTokens: cacheWriteInputTokens,
+            cacheReadInputTokens: cachedInputTokens,
+            cachedInputTokens,
+            reasoningTokens,
+            totalTokens: usage.total_tokens,
+            webSearchRequests: 0,
+            costUSD,
+            tools: pendingTools,
+            bashCommands: [],
+            timestamp,
+            speed: 'standard',
+            deduplicationKey: rawKey,
+            usageSource: 'raw_response_completed',
+            responseId,
+            requestKind: 'normal',
+            ...(sessionProvider ? { modelProvider: sessionProvider } : {}),
+            ...(sessionServiceTier ? { serviceTier: sessionServiceTier } : {}),
+            turnId: currentTurnId,
+            toolSequence: pendingToolSequence.length > 0 ? pendingToolSequence : undefined,
+            userMessage: pendingUserMessage,
+            sessionId,
+            ...(sessionCwd ? { projectPath: sessionCwd, workingDirectory: sessionCwd } : {}),
+            ...(pendingLocAdded ? { locAdded: pendingLocAdded } : {}),
+            ...(pendingLocRemoved ? { locRemoved: pendingLocRemoved } : {}),
+            ...(pendingEditFailed ? { editFailed: pendingEditFailed } : {}),
+          })
+          taskGeneratedTokens += outputTokens + reasoningTokens
+          pendingTools = []
+          pendingToolSequence = []
+          pendingUserMessage = ''
+          pendingOutputChars = 0
+          pendingLocAdded = 0
+          pendingLocRemoved = 0
+          pendingEditFailed = 0
+          continue
+        }
+
         if (entry.type === 'event_msg' && entry.payload?.type === 'token_count') {
+          // RawResponseCompleted is the exact upstream completion record. Once
+          // present, TokenCountEvent is only a UI/context snapshot and must not
+          // create a second billing row.
+          if (sawRawResponse) continue
           // Forked sessions replay the parent's entire event history with
           // timestamps clustered at the fork creation time. Skip replayed
           // events (within 5s of fork) to avoid double-counting.
@@ -1219,7 +1350,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>, capture?: { 
             prevReasoning = total.reasoning_output_tokens ?? 0
           }
 
-          const totalTokens = inputTokens + cachedInputTokens + outputTokens + reasoningTokens
+          const totalTokens = inputTokens + cachedInputTokens + cacheWriteTokens + outputTokens + reasoningTokens
           if (totalTokens === 0) continue
 
           // OpenAI includes cached tokens inside input_tokens; Anthropic does not.
@@ -1269,7 +1400,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>, capture?: { 
           // fork cutoff (accepted trade-off: the alternative collapsed
           // distinct requests wholesale).
           const dedupKey = reportsCumulative
-            ? `codex:${forkedFromId || sessionId}:${cumulativeTotal}:${total?.input_tokens ?? 0}:${total?.cached_input_tokens ?? 0}:${total?.output_tokens ?? 0}:${total?.reasoning_output_tokens ?? 0}`
+            ? `codex:${forkedFromId || sessionId}:${cumulativeTotal}:${total?.input_tokens ?? 0}:${total?.cached_input_tokens ?? 0}:${total?.cache_write_input_tokens ?? 0}:${total?.output_tokens ?? 0}:${total?.reasoning_output_tokens ?? 0}`
             : `codex:record:${JSON.stringify([source.path, tracker.lastCompleteLineOffset])}`
 
           if (seenKeys.has(dedupKey)) continue
@@ -1297,6 +1428,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>, capture?: { 
             cacheReadInputTokens: cachedInputTokens,
             cachedInputTokens,
             reasoningTokens,
+            totalTokens: total?.total_tokens,
             webSearchRequests: 0,
             costUSD,
             tools: pendingTools,
@@ -1304,6 +1436,8 @@ function createParser(source: SessionSource, seenKeys: Set<string>, capture?: { 
             timestamp,
             speed: 'standard',
             deduplicationKey: dedupKey,
+            usageSource: 'token_count_estimate',
+            costIsEstimated: true,
             turnId: currentTurnId,
             toolSequence: pendingToolSequence.length > 0 ? pendingToolSequence : undefined,
             ...(pendingSkills.length > 0 ? { skills: pendingSkills } : {}),

@@ -77,6 +77,7 @@ type Bucket = {
   agentType: string | null
   inputTokens: number
   outputTokens: number
+  reasoningTokens: number
   cacheWriteTokens: number
   cacheReadTokens: number
   costUSD: number
@@ -162,6 +163,7 @@ export async function aggregateModels(projects: ProjectSummary[], opts: Aggregat
               agentType,
               inputTokens: 0,
               outputTokens: 0,
+              reasoningTokens: 0,
               cacheWriteTokens: 0,
               cacheReadTokens: 0,
               costUSD: 0,
@@ -173,6 +175,7 @@ export async function aggregateModels(projects: ProjectSummary[], opts: Aggregat
           }
           bucket.inputTokens += call.usage.inputTokens
           bucket.outputTokens += billableOutputTokens(provider, call.usage.outputTokens, call.usage.reasoningTokens)
+          bucket.reasoningTokens += call.usage.reasoningTokens
           bucket.cacheWriteTokens += call.usage.cacheCreationInputTokens
           // cacheReadInputTokens (Anthropic vocab) and cachedInputTokens (OpenAI vocab)
           // are two names for the same thing. Providers populate one or set both to the

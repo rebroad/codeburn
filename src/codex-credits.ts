@@ -27,6 +27,9 @@ const PRICING_URL = 'https://developers.openai.com/api/docs/pricing.md'
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000
 
 const CREDITS_PER_MILLION: Record<string, CodexCreditRate> = {
+  'gpt-6-astra': { input: 250, cachedInput: 25, cacheWrite: 312.5, output: 1250 },
+  'gpt-6-sol': { input: 50, cachedInput: 5, cacheWrite: 62.5, output: 250 },
+  'gpt-6-luna': { input: 2.5, cachedInput: 0.25, cacheWrite: 3.125, output: 12.5 },
   'gpt-5.6-luna': { input: 5, cachedInput: 0.5, cacheWrite: 6.25, output: 30 },
   'gpt-5.5': { input: 125, cachedInput: 12.5, cacheWrite: null, output: 750 },
   'gpt-5.4': { input: 62.5, cachedInput: 6.25, cacheWrite: null, output: 375 },
@@ -145,7 +148,8 @@ const ACTIVITY_CREDIT_MODELS: Record<string, string> = {
 /// (e.g. "gpt-5.5-codex"). Returns null when the model has no known credit rate.
 export function codexCreditRate(model: string): CodexCreditRate | null {
   const mapped = ACTIVITY_CREDIT_MODELS[model] ?? ACTIVITY_CREDIT_MODELS[model.toLowerCase()]
-  const m = (mapped ?? model).toLowerCase()
+  const m = ((mapped ?? model).toLowerCase()).replace(/-codex$/, '')
+  if (CREDITS_PER_MILLION[m]) return CREDITS_PER_MILLION[m]!
   // Match the version only at a token boundary (start/'-' before, '-'/end
   // after) so a bare `includes('5.4')` can't catch a substring. The tokens
   // AFTER the version give the SKU tier: only the base and `-mini` SKUs have
@@ -158,7 +162,7 @@ export function codexCreditRate(model: string): CodexCreditRate | null {
   if (tierTokens.includes('pro') || tierTokens.includes('nano')) return null
   if (version === '5.4' && tierTokens.includes('mini')) return CREDITS_PER_MILLION['gpt-5.4-mini']!
   if (version === '5.4') return CREDITS_PER_MILLION['gpt-5.4']!
-  if (CREDITS_PER_MILLION[m]) return CREDITS_PER_MILLION[m]!
+  if (version === '5.5') return CREDITS_PER_MILLION['gpt-5.5']!
   return null
 }
 
@@ -172,6 +176,9 @@ export type CodexCreditTokens = {
   /// Billable output tokens: reasoning is already included (billableOutputTokens
   /// in models.ts), so callers must not add it on top here.
   outputTokens: number
+  /// Reasoning tokens are a reported output breakdown. Do not add them to
+  /// outputTokens unless a provider price explicitly requires that treatment.
+  reasoningTokens?: number
 }
 
 /// Credits consumed for one Codex usage record. Returns null when the model has
@@ -183,6 +190,7 @@ export function codexCredits(model: string, tokens: CodexCreditTokens): number |
   const PER_MILLION = 1_000_000
   const cacheWrites = safe(tokens.cacheWriteTokens ?? 0)
   if (cacheWrites > 0 && rate.cacheWrite === null) return null
+  const output = safe(tokens.outputTokens)
   return (
     (safe(tokens.inputTokens) / PER_MILLION) * rate.input +
     (safe(tokens.cachedReadTokens) / PER_MILLION) * rate.cachedInput +

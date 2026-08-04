@@ -56,6 +56,18 @@ describe('getModelCosts', () => {
     expect(mini!.inputCostPerToken).toBeLessThan(full!.inputCostPerToken)
   })
 
+  it('uses current GPT-6 standard API token rates', () => {
+    expect(getModelCosts('gpt-6-astra')).toMatchObject({
+      inputCostPerToken: 10e-6, cacheReadCostPerToken: 1e-6, cacheWriteCostPerToken: 12.5e-6, outputCostPerToken: 50e-6,
+    })
+    expect(getModelCosts('gpt-6-sol')).toMatchObject({
+      inputCostPerToken: 2e-6, cacheReadCostPerToken: 0.2e-6, cacheWriteCostPerToken: 2.5e-6, outputCostPerToken: 10e-6,
+    })
+    expect(getModelCosts('gpt-6-luna')).toMatchObject({
+      inputCostPerToken: 0.1e-6, cacheReadCostPerToken: 0.01e-6, cacheWriteCostPerToken: 0.125e-6, outputCostPerToken: 0.5e-6,
+    })
+  })
+
   it('returns fallback pricing for known Claude models', () => {
     const costs = getModelCosts('claude-opus-4-6-20260205')
     expect(costs).not.toBeNull()

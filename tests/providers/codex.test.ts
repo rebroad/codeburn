@@ -65,6 +65,32 @@ function tokenCount(opts: {
   })
 }
 
+function rawResponse(opts: {
+  id: string
+  ordinal?: number
+  usage?: { input?: number; cached?: number; cacheWrite?: number; output?: number; reasoning?: number; total?: number }
+  timestamp?: string
+}) {
+  const u = opts.usage
+  return JSON.stringify({
+    type: 'event_msg',
+    ordinal: opts.ordinal,
+    timestamp: opts.timestamp ?? '2026-04-14T10:01:00Z',
+    payload: {
+      type: 'raw_response_completed',
+      response_id: opts.id,
+      ...(u ? { token_usage: {
+        input_tokens: u.input ?? 0,
+        cached_input_tokens: u.cached ?? 0,
+        cache_write_input_tokens: u.cacheWrite ?? 0,
+        output_tokens: u.output ?? 0,
+        reasoning_output_tokens: u.reasoning ?? 0,
+        total_tokens: u.total ?? ((u.input ?? 0) + (u.cached ?? 0) + (u.cacheWrite ?? 0) + (u.output ?? 0) + (u.reasoning ?? 0)),
+      } } : {}),
+    },
+  })
+}
+
 function functionCall(name: string, timestamp?: string) {
   return JSON.stringify({
     type: 'response_item',
@@ -647,6 +673,29 @@ describe('codex provider - JSONL parsing', () => {
     expect(calls[0]!.projectPath).toBe('/Users/test/real-project')
     expect(calls[0]!.model).toBe('gpt-5.6-luna')
     expect(calls[0]!.tools).toEqual(['Bash'])
+  })
+
+  it('uses one exact raw completion and ignores its token-count snapshot', async () => {
+    const filePath = await writeSession(tmpDir, '2026-04-14', 'rollout-raw.jsonl', [
+      sessionMeta({ session_id: 'sess-raw', model: 'gpt-5.6-luna' }),
+      rawResponse({ id: 'resp-raw', ordinal: 2, usage: { input: 1000, cached: 400, cacheWrite: 30, output: 200, reasoning: 50, total: 1680 } }),
+      tokenCount({ last: { input: 1000, cached: 400, output: 200, reasoning: 50 }, total: { total: 1650 } }),
+    ])
+    const provider = createCodexProvider(tmpDir)
+    const source = { path: filePath, project: 'test', provider: 'codex' }
+    const calls: ParsedProviderCall[] = []
+    for await (const call of provider.createSessionParser(source, new Set()).parse()) calls.push(call)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({
+      responseId: 'resp-raw',
+      usageSource: 'raw_response_completed',
+      inputTokens: 600,
+      cachedInputTokens: 400,
+      cacheCreationInputTokens: 30,
+      outputTokens: 200,
+      reasoningTokens: 50,
+      totalTokens: 1680,
+    })
   })
 
   it('extracts token usage from last_token_usage', async () => {

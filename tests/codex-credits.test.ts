@@ -14,6 +14,9 @@ afterEach(() => {
 
 describe('codexCreditRate', () => {
   it('resolves the documented per-model rates', () => {
+    expect(codexCreditRate('gpt-6-astra')).toEqual({ input: 250, cachedInput: 25, cacheWrite: 312.5, output: 1250 })
+    expect(codexCreditRate('gpt-6-sol')).toEqual({ input: 50, cachedInput: 5, cacheWrite: 62.5, output: 250 })
+    expect(codexCreditRate('gpt-6-luna')).toEqual({ input: 2.5, cachedInput: 0.25, cacheWrite: 3.125, output: 12.5 })
     expect(codexCreditRate('gpt-5.6-luna')).toEqual({ input: 5, cachedInput: 0.5, cacheWrite: 6.25, output: 30 })
     expect(codexCreditRate('gpt-5.5')).toEqual({ input: 125, cachedInput: 12.5, cacheWrite: null, output: 750 })
     expect(codexCreditRate('gpt-5.4')).toEqual({ input: 62.5, cachedInput: 6.25, cacheWrite: null, output: 375 })
@@ -60,6 +63,11 @@ describe('codexCredits', () => {
 
   it('charges Luna cache writes at the published rate', () => {
     expect(codexCredits('gpt-5.6-luna', { inputTokens: 0, cachedReadTokens: 0, cacheWriteTokens: 1_000_000, outputTokens: 0 })).toBe(6.25)
+  })
+
+  it('keeps reasoning as a breakdown instead of adding it to output billing', () => {
+    // Reasoning is included in the provider output breakdown, not billed twice.
+    expect(codexCredits('gpt-5.5', { inputTokens: 0, cachedReadTokens: 0, outputTokens: 500_000, reasoningTokens: 500_000 })).toBe(375)
   })
 
   it('sums a mixed record (gpt-5.4)', () => {

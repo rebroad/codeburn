@@ -54,7 +54,9 @@ you selected. The help output should include the `watch` command.
 
 ## Watch Codex Usage
 
-Log new Codex requests as JSON to stdout:
+Log new Codex completions as JSON to stdout. The watcher reads the exact
+`raw_response_completed` event, including input, cached input, cache writes,
+output, reasoning, and provider-reported total tokens:
 
 ```bash
 codeburn watch
@@ -80,6 +82,10 @@ reasoning, `%d` USD cost, `%C` credits, and `%f` source.
 
 The watcher also writes the default accounting ledger at
 `~/.cache/codeburn/codex-usage.jsonl`, which `codex-status watch` imports.
+Missing raw usage is recorded as unknown rather than zero, and cumulative
+`token_count` snapshots are ignored once a raw completion has been seen.
+Rollout token counts cannot establish the backend account's credit balance, so
+exact rows report credits as unknown.
 Published cache-write rates are charged. If OpenAI publishes `-` for a
 model's cache-write rate, CodeBurn does not assume that writes are free; a
 record with nonzero writes remains unpriced until you configure a rate.
