@@ -1,11 +1,23 @@
-import { describe, expect, it } from 'vitest'
-import { codexCredits, codexCreditRate } from '../src/codex-credits.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { codexCredits, codexCreditRate, parseCodexPricingMarkdown, refreshCodexPricing } from '../src/codex-credits.js'
+
+const originalCacheDir = process.env['CODEBURN_CACHE_DIR']
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+  if (originalCacheDir === undefined) delete process.env['CODEBURN_CACHE_DIR']
+  else process.env['CODEBURN_CACHE_DIR'] = originalCacheDir
+})
 
 describe('codexCreditRate', () => {
   it('resolves the documented per-model rates', () => {
-    expect(codexCreditRate('gpt-5.5')).toEqual({ input: 125, cachedInput: 12.5, output: 750 })
-    expect(codexCreditRate('gpt-5.4')).toEqual({ input: 62.5, cachedInput: 6.25, output: 375 })
-    expect(codexCreditRate('gpt-5.4-mini')).toEqual({ input: 18.75, cachedInput: 1.875, output: 113 })
+    expect(codexCreditRate('gpt-5.6-luna')).toEqual({ input: 5, cachedInput: 0.5, cacheWrite: 6.25, output: 30 })
+    expect(codexCreditRate('gpt-5.5')).toEqual({ input: 125, cachedInput: 12.5, cacheWrite: null, output: 750 })
+    expect(codexCreditRate('gpt-5.4')).toEqual({ input: 62.5, cachedInput: 6.25, cacheWrite: null, output: 375 })
+    expect(codexCreditRate('gpt-5.4-mini')).toEqual({ input: 18.75, cachedInput: 1.875, cacheWrite: null, output: 113 })
   })
 
   it('tolerates codex suffix variants and casing', () => {
@@ -46,6 +58,10 @@ describe('codexCredits', () => {
     expect(codexCredits('gpt-5.5', { inputTokens: 0, cachedReadTokens: 1_000_000, outputTokens: 0 })).toBe(12.5)
   })
 
+  it('charges Luna cache writes at the published rate', () => {
+    expect(codexCredits('gpt-5.6-luna', { inputTokens: 0, cachedReadTokens: 0, cacheWriteTokens: 1_000_000, outputTokens: 0 })).toBe(6.25)
+  })
+
   it('sums a mixed record (gpt-5.4)', () => {
     // 2M input (125) + 1M cached (6.25) + 0.5M output (187.5) = 318.75
     const credits = codexCredits('gpt-5.4', { inputTokens: 2_000_000, cachedReadTokens: 1_000_000, outputTokens: 500_000 })
@@ -62,5 +78,63 @@ describe('codexCredits', () => {
 
   it('charges auto-review at the GPT-5.5 credit rate, not null', () => {
     expect(codexCredits('codex-auto-review', { inputTokens: 1_000_000, cachedReadTokens: 0, outputTokens: 0 })).toBe(125)
+  })
+
+  it('does not hide cache writes when the model has no published write rate', () => {
+    expect(codexCredits('gpt-5.5', { inputTokens: 0, cachedReadTokens: 0, cacheWriteTokens: 1, outputTokens: 0 })).toBeNull()
+    expect(codexCredits('gpt-5.5', { inputTokens: 1_000_000, cachedReadTokens: 0, outputTokens: 0 })).toBe(125)
+  })
+})
+
+describe('Codex pricing page parsing', () => {
+  it('keeps standard-context prices instead of overwriting them with the all-models table', () => {
+    const rates = parseCodexPricingMarkdown([
+      '## Flagship models',
+      '| Model | Input | Cached input | Cache writes | Output |',
+      '| gpt-5.6-luna | $0.20 | $0.02 | $0.25 | $1.20 |',
+      '## All models',
+      '| Model | Input | Cached input | Cache writes | Output |',
+      '| gpt-5.6-luna | $0.10 | $0.01 | $0.125 | $0.60 |',
+    ].join('\n'))
+    expect(rates['gpt-5.6-luna']).toEqual({ input: 5, cachedInput: 0.5, cacheWrite: 6.25, output: 30 })
+  })
+
+  it('retains rows whose cache-write column is not separately priced', () => {
+    const rates = parseCodexPricingMarkdown([
+      '### Standard pricing data',
+      '| Model | Input | Cached input | Cache writes | Output |',
+      '| gpt-5.5 (<272K context length) | $5.00 | $0.50 | - | $30.00 |',
+      '### Batch pricing data',
+      '| gpt-5.5 | $2.50 | $0.25 | - | $15.00 |',
+    ].join('\n'))
+    expect(rates['gpt-5.5']).toEqual({ input: 125, cachedInput: 12.5, cacheWrite: null, output: 750 })
+  })
+
+  it('rejects a page without a pricing table', () => {
+    expect(() => parseCodexPricingMarkdown('# Pricing\nNo table')).toThrow()
+  })
+
+  it('uses a fresh cached pricing snapshot without fetching', async () => {
+    process.env['CODEBURN_CACHE_DIR'] = await mkdtemp(join(tmpdir(), 'codeburn-pricing-'))
+    await writeFile(join(process.env['CODEBURN_CACHE_DIR'], 'codex-pricing.json'), JSON.stringify({
+      updatedAt: new Date().toISOString(),
+      rates: { 'gpt-5.6-luna': { input: 7, cachedInput: 0.7, cacheWrite: 8.75, output: 42 } },
+    }))
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    await refreshCodexPricing()
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(codexCreditRate('gpt-5.6-luna')?.input).toBe(7)
+  })
+
+  it('falls back to a stale valid cache when the pricing page is unavailable', async () => {
+    process.env['CODEBURN_CACHE_DIR'] = await mkdtemp(join(tmpdir(), 'codeburn-pricing-'))
+    await writeFile(join(process.env['CODEBURN_CACHE_DIR'], 'codex-pricing.json'), JSON.stringify({
+      updatedAt: '2020-01-01T00:00:00.000Z',
+      rates: { 'gpt-5.6-luna': { input: 9, cachedInput: 0.9, cacheWrite: 11.25, output: 54 } },
+    }))
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')))
+    await refreshCodexPricing()
+    expect(codexCreditRate('gpt-5.6-luna')?.input).toBe(9)
   })
 })
