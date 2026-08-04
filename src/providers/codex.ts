@@ -150,6 +150,7 @@ type CodexEntry = {
     model_provider_id?: string
     service_tier?: string
     response_id?: string
+    effective_model?: string
     token_usage?: CodexTokenUsage
     history_base?: { thread_id?: string; end_ordinal_exclusive?: number; end_byte_offset?: number }
     subagent_history_start_ordinal?: number
@@ -493,6 +494,7 @@ function parseCodexLine(line: string | Buffer): CodexEntry | null {
   const compactTotalUsage = getRawTokenUsage(pHead, 'total_token_usage')
   const compactRawUsage = getRawTokenUsage(pHead, 'token_usage')
   const compactResponseId = getRawJsonStringField(pHead, 'response_id')
+  const compactEffectiveModel = getRawJsonStringField(pHead, 'effective_model')
   const compactInfo = compactModel || compactModelName || compactLastUsage || compactTotalUsage
     ? { model: compactModel, model_name: compactModelName, last_token_usage: compactLastUsage, total_token_usage: compactTotalUsage }
     : undefined
@@ -518,6 +520,7 @@ function parseCodexLine(line: string | Buffer): CodexEntry | null {
       model_provider_id: getRawJsonStringField(pHead, 'model_provider_id'),
       service_tier: getRawJsonStringField(pHead, 'service_tier'),
       response_id: compactResponseId,
+      effective_model: compactEffectiveModel,
       token_usage: compactRawUsage,
       invocation,
       call_id: getRawJsonStringField(pHead, 'call_id'),
@@ -631,7 +634,7 @@ function firstModelString(...values: unknown[]): string | undefined {
 }
 
 function resolveModel(info: CodexEntry['payload'], sessionModel?: string): string {
-  return firstModelString(info?.model, info?.info?.model, info?.info?.model_name, sessionModel) ?? 'unknown'
+  return firstModelString(info?.effective_model, info?.model, info?.info?.model, info?.info?.model_name, sessionModel) ?? 'unknown'
 }
 
 // Everything the single-pass decode carries across a `task_started` boundary.
