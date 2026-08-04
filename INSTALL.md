@@ -23,7 +23,9 @@ To make that permanent, add the `export PATH=...` line to `~/.bashrc` or
 ## Install From This Repository
 
 Use this when running the current checkout or developing CodeBurn. The CLI
-must be built before it is installed.
+must be built before it is installed. Install the packed `.tgz` file below;
+do not run `npm install --global .` because npm can link the source directory,
+which does not reliably expose the built CLI through `PATH`.
 
 With NVM, run:
 
@@ -37,15 +39,22 @@ npm run build:cli
 
 NVM_PREFIX="$(dirname "$NVM_BIN")"
 PACKAGE_DIR="$(mktemp -d)"
+
+# Remove an older linked/global install in this Node environment.
+npm uninstall --global --prefix "$NVM_PREFIX" codeburn 2>/dev/null || true
+
 npm pack --pack-destination "$PACKAGE_DIR"
 npm install --global --prefix "$NVM_PREFIX" "$PACKAGE_DIR"/codeburn-*.tgz
 
 export PATH="$NVM_BIN:$PATH"
 hash -r  # Bash; use rehash in zsh
+test -x "$NVM_BIN/codeburn"
+command -v codeburn
 ```
 
-The package step is intentional. It installs the built `dist/` files instead
-of linking an unbuilt source directory.
+The package step is intentional: it installs the built `dist/` files instead
+of linking the source directory. The `test` command fails immediately if npm
+did not create the executable in the active Node installation.
 
 If npm reports a global prefix different from the active NVM installation,
 check it with:
