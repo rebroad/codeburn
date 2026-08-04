@@ -1,12 +1,14 @@
 import { appendFile, mkdir, open, readdir, stat } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
-import { calculateCost } from './models.js'
-import { codexCredits } from './codex-credits.js'
+import { calculateCost, getModelCosts } from './models.js'
+import { codexCostUsd, codexCreditRate, codexCredits, refreshCodexPricing } from './codex-credits.js'
 
 type TokenUsage = {
   input_tokens?: number
   cached_input_tokens?: number
+  cache_write_input_tokens?: number
   output_tokens?: number
   reasoning_output_tokens?: number
   total_tokens?: number
@@ -28,10 +30,12 @@ export type CodexUsageRecord = {
   model: string
   inputTokens: number
   cachedInputTokens: number
+  cacheWriteTokens?: number
   outputTokens: number
   reasoningTokens: number
-  costUsd: number
+  costUsd: number | null
   credits: number | null
+  eventId?: string
   source: string
 }
 
@@ -39,6 +43,7 @@ export type CodexWatchOptions = {
   outputPath?: string
   pollSeconds?: number
   format?: string
+  ledgerPath?: string
 }
 
 type FileState = {
@@ -64,6 +69,7 @@ function usageSignature(usage: TokenUsage): string {
     usage.total_tokens ?? 0,
     usage.input_tokens ?? 0,
     usage.cached_input_tokens ?? 0,
+    usage.cache_write_input_tokens ?? 0,
     usage.output_tokens ?? 0,
     usage.reasoning_output_tokens ?? 0,
   ].join(':')
@@ -115,16 +121,19 @@ export function processCodexLine(
 
   let inputTokens: number
   let cachedInputTokens: number
+  let cacheWriteTokens: number
   let outputTokens: number
   let reasoningTokens: number
   if (last) {
     inputTokens = numberValue(last.input_tokens)
     cachedInputTokens = numberValue(last.cached_input_tokens)
+    cacheWriteTokens = numberValue(last.cache_write_input_tokens)
     outputTokens = numberValue(last.output_tokens)
     reasoningTokens = numberValue(last.reasoning_output_tokens)
   } else if (total) {
     inputTokens = delta(total.input_tokens, state.previous?.input_tokens)
     cachedInputTokens = delta(total.cached_input_tokens, state.previous?.cached_input_tokens)
+    cacheWriteTokens = delta(total.cache_write_input_tokens, state.previous?.cache_write_input_tokens)
     outputTokens = delta(total.output_tokens, state.previous?.output_tokens)
     reasoningTokens = delta(total.reasoning_output_tokens, state.previous?.reasoning_output_tokens)
   } else {
@@ -133,21 +142,36 @@ export function processCodexLine(
 
   if (total) state.previous = total
   const normalizedInput = Math.max(0, inputTokens - cachedInputTokens)
-  const resolvedModel = state.model ?? 'gpt-5'
-  const costUsd = calculateCost(
-    resolvedModel,
-    normalizedInput,
-    outputTokens + reasoningTokens,
-    0,
-    cachedInputTokens,
-    0,
-  )
-  const credits = codexCredits(resolvedModel, {
+  const resolvedModel = state.model ?? 'unknown'
+  const creditTokens = {
     inputTokens: normalizedInput,
     cachedReadTokens: cachedInputTokens,
+    cacheWriteTokens,
     outputTokens,
     reasoningTokens,
-  })
+  }
+  const credits = codexCredits(resolvedModel, creditTokens)
+  const genericCosts = getModelCosts(resolvedModel)
+  const hasGenericPrice = genericCosts !== null && (
+    genericCosts.inputCostPerToken > 0
+    || genericCosts.outputCostPerToken > 0
+    || genericCosts.cacheWriteCostPerToken > 0
+    || genericCosts.cacheReadCostPerToken > 0
+  )
+  const costUsd = codexCreditRate(resolvedModel)
+    ? codexCostUsd(resolvedModel, creditTokens)
+    : hasGenericPrice ? calculateCost(
+      resolvedModel,
+      normalizedInput,
+      outputTokens + reasoningTokens,
+      cacheWriteTokens,
+      cachedInputTokens,
+      0,
+    ) : null
+  const eventId = createHash('sha256').update(JSON.stringify([
+    source, state.sessionId ?? '', entry['timestamp'] ?? '', normalizedInput,
+    cachedInputTokens, cacheWriteTokens, outputTokens, reasoningTokens,
+  ])).digest('hex')
 
   return {
     loggedAt: new Date().toISOString(),
@@ -157,15 +181,17 @@ export function processCodexLine(
     model: resolvedModel,
     inputTokens: normalizedInput,
     cachedInputTokens,
+    cacheWriteTokens,
     outputTokens,
     reasoningTokens,
     costUsd,
     credits,
+    eventId,
     source,
   }
 }
 
-const DEFAULT_HUMAN_FORMAT = '%t %m input=%i cached=%c output=%o reasoning=%r cost=$%d credits=%C'
+const DEFAULT_HUMAN_FORMAT = '%t %m input=%i cached=%c cache_write=%w output=%o reasoning=%r cost=$%d credits=%C'
 
 function displayValue(value: string | number | null): string {
   if (value === null) return '-'
@@ -185,13 +211,14 @@ export function formatCodexUsageRecord(record: CodexUsageRecord, format: string)
     p: record.projectPath,
     i: record.inputTokens,
     c: record.cachedInputTokens,
+    w: record.cacheWriteTokens ?? 0,
     o: record.outputTokens,
     r: record.reasoningTokens,
     d: record.costUsd,
     C: record.credits,
     f: record.source,
   }
-  return template.replace(/%([%tlmspicordCf])/g, (_match, key: string) => displayValue(values[key] ?? null))
+  return template.replace(/%([%tlmspicowrdCf])/g, (_match, key: string) => displayValue(values[key] ?? null))
 }
 
 async function readAppended(filePath: string, state: FileState): Promise<string[]> {
@@ -275,7 +302,10 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
   const outputPath = options.outputPath
   const format = options.format ?? 'json'
   const pollMs = Math.max(250, (options.pollSeconds ?? 1) * 1000)
+  const ledgerPath = options.ledgerPath ?? join(homedir(), '.cache', 'codeburn', 'codex-usage.jsonl')
   if (outputPath) await mkdir(dirname(outputPath), { recursive: true })
+  if (ledgerPath) await mkdir(dirname(ledgerPath), { recursive: true })
+  await refreshCodexPricing()
 
   const files = new Map<string, FileState>()
   const registerNewFiles = async (): Promise<void> => {
@@ -297,6 +327,30 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
       for (const line of lines) {
         const record = processCodexLine(state.usage, line, path)
         if (!record) continue
+        if (ledgerPath) {
+          await appendFile(ledgerPath, JSON.stringify({
+            event_id: record.eventId,
+            provider: 'openai',
+            updated_at: Number.isFinite(Date.parse(record.timestamp))
+              ? Math.floor(Date.parse(record.timestamp) / 1000)
+              : Math.floor(Date.parse(record.loggedAt) / 1000),
+            total_usage_usd: record.costUsd,
+            priced: record.costUsd !== null,
+            // Kept for codex-status schema compatibility. Codex does not emit
+            // a separate billable prewarm token category.
+            total_usage_usd_with_prewarm: record.costUsd,
+            total_tokens: record.inputTokens + record.cachedInputTokens + (record.cacheWriteTokens ?? 0) + record.outputTokens + record.reasoningTokens,
+            input_tokens: record.inputTokens,
+            cached_input_tokens: record.cachedInputTokens,
+            cache_write_input_tokens: record.cacheWriteTokens,
+            output_tokens: record.outputTokens,
+            reasoning_output_tokens: record.reasoningTokens,
+            model: record.model,
+            credits: record.credits,
+            session_id: record.sessionId,
+            source: record.source,
+          }) + '\n', 'utf8')
+        }
         const serialized = formatCodexUsageRecord(record, format) + '\n'
         if (outputPath) await appendFile(outputPath, serialized, 'utf8')
         else process.stdout.write(serialized)
@@ -305,7 +359,7 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
   }
 
   await flush()
-  process.stderr.write(`Watching Codex sessions; ${outputPath ? `logging to ${outputPath}` : 'writing records to stdout'} (Ctrl-C to stop)\n`)
+  process.stderr.write(`Watching Codex sessions; ${outputPath ? `logging to ${outputPath}` : 'writing records to stdout'}${ledgerPath ? `; accounting to ${ledgerPath}` : ''} (Ctrl-C to stop)\n`)
   await new Promise<void>((resolve) => {
     const timer = setInterval(() => { void flush().catch(error => process.stderr.write(`codeburn watch: ${String(error)}\n`)) }, pollMs)
     const stop = () => { clearInterval(timer); resolve() }

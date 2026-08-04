@@ -35,11 +35,21 @@ describe('Codex live usage processing', () => {
       model: 'gpt-5.4',
       inputTokens: 600,
       cachedInputTokens: 400,
+      cacheWriteTokens: 0,
       outputTokens: 200,
       reasoningTokens: 50,
     })
     expect(record?.costUsd).toBeGreaterThan(0)
     expect(record?.credits).toBeGreaterThan(0)
+  })
+
+  it('tracks cache-write tokens separately', () => {
+    const state: CodexWatchState = { model: 'gpt-5.6-luna' }
+    const record = processCodexLine(state, tokens(
+      { input_tokens: 100, cached_input_tokens: 20, cache_write_input_tokens: 30, output_tokens: 40, reasoning_output_tokens: 10 },
+      { input_tokens: 100, cached_input_tokens: 20, cache_write_input_tokens: 30, output_tokens: 40, reasoning_output_tokens: 10, total_tokens: 200 },
+    ), '/rollout.jsonl')
+    expect(record).toMatchObject({ inputTokens: 80, cachedInputTokens: 20, cacheWriteTokens: 30 })
   })
 
   it('converts cumulative-only usage into per-request deltas', () => {
@@ -78,6 +88,29 @@ describe('Codex live usage processing', () => {
       { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
     ), '/rollout.jsonl')
     expect(record?.model).toBe('gpt-5.6-luna')
+  })
+
+  it('does not report an unknown Codex catalog slug as zero cost', () => {
+    const state: CodexWatchState = {}
+    processCodexLine(state, JSON.stringify({
+      type: 'turn_context',
+      payload: { model: 'codex-auto-review' },
+    }), '/rollout.jsonl')
+    const record = processCodexLine(state, tokens(
+      { input_tokens: 100, output_tokens: 40 },
+      { input_tokens: 100, output_tokens: 40, total_tokens: 140 },
+    ), '/rollout.jsonl')
+    expect(record?.costUsd).toBeNull()
+    expect(record?.credits).toBeNull()
+  })
+
+  it('does not assume a model when the rollout omits model metadata', () => {
+    const state: CodexWatchState = {}
+    const record = processCodexLine(state, tokens(
+      { input_tokens: 100, output_tokens: 40 },
+      { input_tokens: 100, output_tokens: 40, total_tokens: 140 },
+    ), '/rollout.jsonl')
+    expect(record).toMatchObject({ model: 'unknown', costUsd: null, credits: null })
   })
 
   it('renders selected human-readable fields using date-style tokens', () => {

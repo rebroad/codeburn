@@ -70,9 +70,19 @@ Use human-readable output with selectable date-style fields:
 
 ```bash
 codeburn watch --format human
+codex-status watch
 codeburn watch --format '%t %m input=%i cached=%c output=%o cost=$%d credits=%C'
 ```
 
 The format tokens are `%t` timestamp, `%l` logged time, `%m` model, `%s`
-session, `%p` project, `%i` input, `%c` cached input, `%o` output, `%r`
+session, `%p` project, `%i` input, `%c` cached input, `%w` cache writes, `%o` output, `%r`
 reasoning, `%d` USD cost, `%C` credits, and `%f` source.
+
+The watcher also writes the default accounting ledger at
+`~/.cache/codeburn/codex-usage.jsonl`, which `codex-status watch` imports.
+Published cache-write rates are charged. If OpenAI publishes `-` for a
+model's cache-write rate, CodeBurn does not assume that writes are free; a
+record with nonzero writes remains unpriced until you configure a rate.
+Use `codeburn pricing update` to refresh Codex pricing manually. Unknown
+Codex catalog models are not priced as zero; configure one with
+`codeburn price-override <model> --input <usd-per-1M> --output <usd-per-1M>`.

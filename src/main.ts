@@ -49,6 +49,7 @@ const { version } = require('../package.json')
 import { loadCurrency, getCurrency, isValidCurrencyCode } from './currency.js'
 import { CodexThroughputReader, newestCodexSession, renderCodexThroughput } from './codex-throughput.js'
 import { runCodexWatch } from './codex-watch.js'
+import { refreshCodexPricing } from './codex-credits.js'
 
 // A downstream reader that closes the pipe early (`| head`, quitting `less`, or
 // a missing command) makes stdout writes fail with EPIPE. Exit cleanly rather
@@ -1963,15 +1964,29 @@ program
   .command('watch')
   .description('Watch new Codex requests and log token usage and costs in real time')
   .option('--output <path>', 'Write records to this file instead of stdout')
+  .option('--ledger <path>', 'Append accounting events for codex-status (default: ~/.cache/codeburn/codex-usage.jsonl)')
   .option('--format <format>', 'Output format: json, human, or date-style tokens (default: json)', 'json')
   .option('--poll <seconds>', 'Polling interval in seconds', parseNumber, 1)
-  .action(async (opts: { output?: string; format: string; poll: number }) => {
+  .action(async (opts: { output?: string; ledger?: string; format: string; poll: number }) => {
     if (!Number.isFinite(opts.poll) || opts.poll <= 0) {
       console.error('watch: --poll must be greater than zero')
       process.exitCode = 2
       return
     }
-    await runCodexWatch({ outputPath: opts.output, format: opts.format, pollSeconds: opts.poll })
+    await runCodexWatch({ outputPath: opts.output, ledgerPath: opts.ledger, format: opts.format, pollSeconds: opts.poll })
+  })
+
+program
+  .command('pricing [action]')
+  .description('Refresh the Codex model credit pricing cache')
+  .action(async (action?: string) => {
+    if (action && action !== 'update') {
+      console.error('pricing: expected action "update"')
+      process.exitCode = 2
+      return
+    }
+    await refreshCodexPricing()
+    console.log('Codex pricing cache refreshed (or built-in fallback retained).')
   })
 
 program
