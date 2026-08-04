@@ -56,6 +56,7 @@ type Bucket = {
   agentType: string | null
   inputTokens: number
   outputTokens: number
+  reasoningTokens: number
   cacheWriteTokens: number
   cacheReadTokens: number
   costUSD: number
@@ -109,6 +110,7 @@ export async function aggregateModels(projects: ProjectSummary[], opts: Aggregat
               agentType,
               inputTokens: 0,
               outputTokens: 0,
+              reasoningTokens: 0,
               cacheWriteTokens: 0,
               cacheReadTokens: 0,
               costUSD: 0,
@@ -120,6 +122,7 @@ export async function aggregateModels(projects: ProjectSummary[], opts: Aggregat
           }
           bucket.inputTokens += call.usage.inputTokens
           bucket.outputTokens += call.usage.outputTokens + call.usage.reasoningTokens
+          bucket.reasoningTokens += call.usage.reasoningTokens
           bucket.cacheWriteTokens += call.usage.cacheCreationInputTokens
           // cacheReadInputTokens (Anthropic vocab) and cachedInputTokens (OpenAI vocab)
           // are two names for the same thing. Providers populate one or set both to the
@@ -179,14 +182,14 @@ export async function aggregateModels(projects: ProjectSummary[], opts: Aggregat
       savingsUSD: bucket.savingsUSD,
       savingsBaselineModel: bucket.savingsBaselineModel,
       calls: bucket.calls,
-      // outputTokens already includes reasoning (folded in above), and for Codex
-      // inputTokens is non-cached with cacheReadTokens holding cached input, which
-      // is exactly what the credit rates expect.
+      // The displayed output column includes reasoning for compatibility with
+      // other providers. Codex credit pricing receives the disjoint output
+      // component because reasoning is a reported breakdown, not an extra bill.
       credits: bucket.provider === 'codex'
         ? codexCredits(bucket.model, {
             inputTokens: bucket.inputTokens,
             cachedReadTokens: bucket.cacheReadTokens,
-            outputTokens: bucket.outputTokens,
+            outputTokens: bucket.outputTokens - bucket.reasoningTokens,
           })
         : null,
     }

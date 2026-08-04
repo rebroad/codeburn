@@ -19,6 +19,18 @@ function tokens(last: Record<string, number> | undefined, total: Record<string, 
   })
 }
 
+function rawResponse(responseId: string, usage?: Record<string, number>): string {
+  return JSON.stringify({
+    type: 'event_msg',
+    timestamp: '2026-08-04T12:00:01.000Z',
+    payload: {
+      type: 'raw_response_completed',
+      response_id: responseId,
+      ...(usage ? { token_usage: usage } : {}),
+    },
+  })
+}
+
 describe('Codex live usage processing', () => {
   it('primes session metadata and normalizes cached input', () => {
     const state: CodexWatchState = {}
@@ -40,7 +52,45 @@ describe('Codex live usage processing', () => {
       reasoningTokens: 50,
     })
     expect(record?.costUsd).toBeGreaterThan(0)
-    expect(record?.credits).toBeGreaterThan(0)
+    expect(record?.usageSource).toBe('token_count_estimate')
+  })
+
+  it('uses exact raw completion usage and suppresses token snapshots', () => {
+    const state: CodexWatchState = {}
+    processCodexLine(state, meta(), '/rollout.jsonl')
+    const record = processCodexLine(state, rawResponse('resp-1', {
+      input_tokens: 1000,
+      cached_input_tokens: 400,
+      cache_write_input_tokens: 30,
+      output_tokens: 200,
+      reasoning_output_tokens: 50,
+      total_tokens: 1680,
+    }), '/rollout.jsonl')
+
+    expect(record).toMatchObject({
+      responseId: 'resp-1',
+      usageSource: 'raw_response_completed',
+      inputTokens: 600,
+      cachedInputTokens: 400,
+      cacheWriteTokens: 30,
+      outputTokens: 200,
+      reasoningTokens: 50,
+      totalTokens: 1680,
+    })
+    expect(record?.credits).toBeNull()
+    expect(processCodexLine(state, tokens(undefined, {
+      input_tokens: 1000, cached_input_tokens: 400, output_tokens: 200,
+      reasoning_output_tokens: 50, total_tokens: 1650,
+    }), '/rollout.jsonl')).toBeNull()
+    expect(processCodexLine(state, rawResponse('resp-1', {
+      input_tokens: 1000, output_tokens: 200, total_tokens: 1200,
+    }), '/rollout.jsonl')).toBeNull()
+  })
+
+  it('keeps missing raw usage unknown rather than zero-priced', () => {
+    const state: CodexWatchState = { model: 'gpt-5.6-luna' }
+    const record = processCodexLine(state, rawResponse('resp-missing'), '/rollout.jsonl')
+    expect(record).toMatchObject({ usageUnknown: true, costUsd: null, totalTokens: undefined })
   })
 
   it('tracks cache-write tokens separately', () => {

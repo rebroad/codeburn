@@ -2524,7 +2524,7 @@ function providerCallsToCachedTurns(calls: ParsedProviderCall[]): CachedTurn[] {
 
 function cachedCallToApiCall(call: CachedCall): ParsedApiCall {
   const u = call.usage
-  const outputForCost = call.provider === 'claude'
+  const outputForCost = call.provider === 'claude' || call.provider === 'codex'
     ? u.outputTokens
     : u.outputTokens + u.reasoningTokens
   const costUSD = calculateCost(

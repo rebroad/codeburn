@@ -96,6 +96,7 @@ export function countUnifiedDiffLoc(diff: unknown): { added: number; removed: nu
 
 type CodexEntry = {
   type: string
+  ordinal?: number
   timestamp?: string
   payload?: {
     type?: string
@@ -111,6 +112,12 @@ type CodexEntry = {
     session_id?: string
     forked_from_id?: string
     model?: string
+    model_provider_id?: string
+    service_tier?: string
+    response_id?: string
+    token_usage?: CodexTokenUsage
+    history_base?: { thread_id?: string; end_ordinal_exclusive?: number; end_byte_offset?: number }
+    subagent_history_start_ordinal?: number
     name?: string
     invocation?: { server?: string; tool?: string }
     content?: Array<{ type?: string; text?: string }>
@@ -126,6 +133,7 @@ type CodexEntry = {
 type CodexTokenUsage = {
   input_tokens?: number
   cached_input_tokens?: number
+  cache_write_input_tokens?: number
   output_tokens?: number
   reasoning_output_tokens?: number
   total_tokens?: number
@@ -316,13 +324,14 @@ function durationValueMs(value: unknown): number | undefined {
   return undefined
 }
 
-function getRawTokenUsage(head: string, field: 'last_token_usage' | 'total_token_usage'): CodexTokenUsage | undefined {
+function getRawTokenUsage(head: string, field: 'last_token_usage' | 'total_token_usage' | 'token_usage'): CodexTokenUsage | undefined {
   const match = new RegExp(`"${field}"\\s*:\\s*\\{([^}]*)\\}`).exec(head)
   if (!match) return undefined
   const body = match[1]!
   return {
     input_tokens: getRawJsonNumberField(body, 'input_tokens'),
     cached_input_tokens: getRawJsonNumberField(body, 'cached_input_tokens'),
+    cache_write_input_tokens: getRawJsonNumberField(body, 'cache_write_input_tokens'),
     output_tokens: getRawJsonNumberField(body, 'output_tokens'),
     reasoning_output_tokens: getRawJsonNumberField(body, 'reasoning_output_tokens'),
     total_tokens: getRawJsonNumberField(body, 'total_tokens'),
@@ -435,6 +444,8 @@ function parseCodexLine(line: string | Buffer): CodexEntry | null {
   const compactModelName = getRawJsonStringField(pHead, 'model_name')
   const compactLastUsage = getRawTokenUsage(pHead, 'last_token_usage')
   const compactTotalUsage = getRawTokenUsage(pHead, 'total_token_usage')
+  const compactRawUsage = getRawTokenUsage(pHead, 'token_usage')
+  const compactResponseId = getRawJsonStringField(pHead, 'response_id')
   const compactInfo = compactModel || compactModelName || compactLastUsage || compactTotalUsage
     ? { model: compactModel, model_name: compactModelName, last_token_usage: compactLastUsage, total_token_usage: compactTotalUsage }
     : undefined
@@ -442,6 +453,7 @@ function parseCodexLine(line: string | Buffer): CodexEntry | null {
 
   const entry: CodexEntry = {
     type,
+    ordinal: getRawJsonNumberField(head, 'ordinal'),
     timestamp: getRawJsonStringField(head, 'timestamp'),
     payload: {
       type: payloadType,
@@ -452,6 +464,10 @@ function parseCodexLine(line: string | Buffer): CodexEntry | null {
       session_id: getRawJsonStringField(pHead, 'session_id'),
       forked_from_id: getRawJsonStringField(pHead, 'forked_from_id'),
       model: getRawJsonStringField(pHead, 'model'),
+      model_provider_id: getRawJsonStringField(pHead, 'model_provider_id'),
+      service_tier: getRawJsonStringField(pHead, 'service_tier'),
+      response_id: compactResponseId,
+      token_usage: compactRawUsage,
       name: getRawJsonStringField(pHead, 'name'),
       invocation,
       call_id: getRawJsonStringField(pHead, 'call_id'),
@@ -566,7 +582,7 @@ function firstModelString(...values: unknown[]): string | undefined {
 }
 
 function resolveModel(info: CodexEntry['payload'], sessionModel?: string): string {
-  return firstModelString(info?.model, info?.info?.model, info?.info?.model_name, sessionModel) ?? 'gpt-5'
+  return firstModelString(info?.model, info?.info?.model, info?.info?.model_name, sessionModel) ?? 'unknown'
 }
 
 function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
@@ -586,6 +602,10 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
       if (!fp) return
 
       let sessionModel: string | undefined
+      let sessionProvider: string | undefined
+      let sessionServiceTier: string | undefined
+      let sawRawResponse = false
+      let historyBaseEndOrdinal: number | undefined
       let sessionId = ''
       let sessionCwd: string | undefined
       let forkedFromId = ''
@@ -599,6 +619,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
       let prevCumulativeTotal: number | null = null
       let prevInput = 0
       let prevCached = 0
+      let prevCacheWrite = 0
       let prevOutput = 0
       let prevReasoning = 0
       let pendingTools: string[] = []
@@ -654,11 +675,19 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
             if (Number.isFinite(forkBaseMs)) forkCutoff = new Date(forkBaseMs + 5000).toISOString()
           }
           if (typeof entry.payload?.model === 'string') sessionModel = entry.payload.model
+          if (typeof entry.payload?.model_provider === 'string') sessionProvider = entry.payload.model_provider
+          if (typeof entry.payload?.service_tier === 'string') sessionServiceTier = entry.payload.service_tier
+          const historyBase = entry.payload?.history_base
+          if (historyBase && typeof historyBase.end_ordinal_exclusive === 'number') {
+            historyBaseEndOrdinal = historyBase.end_ordinal_exclusive
+          }
           continue
         }
 
-        if (entry.type === 'turn_context' && typeof entry.payload?.model === 'string') {
-          sessionModel = entry.payload.model
+        if (entry.type === 'turn_context') {
+          if (typeof entry.payload?.model === 'string') sessionModel = entry.payload.model
+          if (typeof entry.payload?.model_provider_id === 'string') sessionProvider = entry.payload.model_provider_id
+          if (typeof entry.payload?.service_tier === 'string') sessionServiceTier = entry.payload.service_tier
           continue
         }
 
@@ -818,7 +847,112 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
           continue
         }
 
+        if (entry.type === 'event_msg' && entry.payload?.type === 'raw_response_completed') {
+          sawRawResponse = true
+          if (historyBaseEndOrdinal !== undefined && entry.ordinal !== undefined && entry.ordinal <= historyBaseEndOrdinal) continue
+          const usage = entry.payload.token_usage
+          const responseId = entry.payload.response_id
+          const rawKey = responseId
+            ? `codex:raw:${responseId}`
+            : `codex:raw:${source.path}:${entry.ordinal ?? results.length}`
+          if (seenKeys.has(rawKey)) continue
+          seenKeys.add(rawKey)
+
+          if (!usage) {
+            pendingTaskCalls.push({
+              provider: 'codex',
+              model: resolveModel(entry.payload, sessionModel),
+              inputTokens: 0,
+              outputTokens: 0,
+              cacheCreationInputTokens: 0,
+              cacheReadInputTokens: 0,
+              cachedInputTokens: 0,
+              reasoningTokens: 0,
+              webSearchRequests: 0,
+              costUSD: 0,
+              costIsEstimated: true,
+              usageSource: 'raw_response_completed',
+              usageUnknown: true,
+              responseId,
+              requestKind: 'normal',
+              tools: pendingTools,
+              bashCommands: [],
+              timestamp: entry.timestamp ?? '',
+              speed: 'standard',
+              deduplicationKey: rawKey,
+              turnId: currentTurnId,
+              userMessage: pendingUserMessage,
+              sessionId,
+            })
+            pendingTools = []
+            pendingToolSequence = []
+            pendingUserMessage = ''
+            continue
+          }
+
+          const inputTokens = Math.max(0, usage.input_tokens ?? 0)
+          const cachedInputTokens = Math.max(0, usage.cached_input_tokens ?? 0)
+          const cacheWriteInputTokens = Math.max(0, usage.cache_write_input_tokens ?? 0)
+          const outputTokens = Math.max(0, usage.output_tokens ?? 0)
+          const reasoningTokens = Math.max(0, usage.reasoning_output_tokens ?? 0)
+          const uncachedInputTokens = Math.max(0, inputTokens - cachedInputTokens)
+          const model = resolveModel(entry.payload, sessionModel)
+          const timestamp = entry.timestamp ?? ''
+          const costUSD = calculateCost(
+            model,
+            uncachedInputTokens,
+            outputTokens,
+            cacheWriteInputTokens,
+            cachedInputTokens,
+            0,
+          )
+          pendingTaskCalls.push({
+            provider: 'codex',
+            model,
+            inputTokens: uncachedInputTokens,
+            outputTokens,
+            cacheCreationInputTokens: cacheWriteInputTokens,
+            cacheReadInputTokens: cachedInputTokens,
+            cachedInputTokens,
+            reasoningTokens,
+            totalTokens: usage.total_tokens,
+            webSearchRequests: 0,
+            costUSD,
+            tools: pendingTools,
+            bashCommands: [],
+            timestamp,
+            speed: 'standard',
+            deduplicationKey: rawKey,
+            usageSource: 'raw_response_completed',
+            responseId,
+            requestKind: 'normal',
+            ...(sessionProvider ? { modelProvider: sessionProvider } : {}),
+            ...(sessionServiceTier ? { serviceTier: sessionServiceTier } : {}),
+            turnId: currentTurnId,
+            toolSequence: pendingToolSequence.length > 0 ? pendingToolSequence : undefined,
+            userMessage: pendingUserMessage,
+            sessionId,
+            ...(sessionCwd ? { projectPath: sessionCwd, workingDirectory: sessionCwd } : {}),
+            ...(pendingLocAdded ? { locAdded: pendingLocAdded } : {}),
+            ...(pendingLocRemoved ? { locRemoved: pendingLocRemoved } : {}),
+            ...(pendingEditFailed ? { editFailed: pendingEditFailed } : {}),
+          })
+          taskGeneratedTokens += outputTokens + reasoningTokens
+          pendingTools = []
+          pendingToolSequence = []
+          pendingUserMessage = ''
+          pendingOutputChars = 0
+          pendingLocAdded = 0
+          pendingLocRemoved = 0
+          pendingEditFailed = 0
+          continue
+        }
+
         if (entry.type === 'event_msg' && entry.payload?.type === 'token_count') {
+          // RawResponseCompleted is the exact upstream completion record. Once
+          // present, TokenCountEvent is only a UI/context snapshot and must not
+          // create a second billing row.
+          if (sawRawResponse) continue
           // Forked sessions replay the parent's entire event history with
           // timestamps clustered at the fork creation time. Skip replayed
           // events (within 5s of fork) to avoid double-counting.
@@ -889,12 +1023,14 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
           const last = info.last_token_usage
           let inputTokens = 0
           let cachedInputTokens = 0
+          let cacheWriteInputTokens = 0
           let outputTokens = 0
           let reasoningTokens = 0
 
           if (last) {
             inputTokens = last.input_tokens ?? 0
             cachedInputTokens = last.cached_input_tokens ?? 0
+            cacheWriteInputTokens = last.cache_write_input_tokens ?? 0
             outputTokens = last.output_tokens ?? 0
             reasoningTokens = last.reasoning_output_tokens ?? 0
           } else if (cumulativeTotal > 0) {
@@ -902,6 +1038,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
             if (!total) continue
             inputTokens = (total.input_tokens ?? 0) - prevInput
             cachedInputTokens = (total.cached_input_tokens ?? 0) - prevCached
+            cacheWriteInputTokens = (total.cache_write_input_tokens ?? 0) - (prevCacheWrite ?? 0)
             outputTokens = (total.output_tokens ?? 0) - prevOutput
             reasoningTokens = (total.reasoning_output_tokens ?? 0) - prevReasoning
           }
@@ -917,11 +1054,12 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
           if (total) {
             prevInput = total.input_tokens ?? 0
             prevCached = total.cached_input_tokens ?? 0
+            prevCacheWrite = total.cache_write_input_tokens ?? 0
             prevOutput = total.output_tokens ?? 0
             prevReasoning = total.reasoning_output_tokens ?? 0
           }
 
-          const totalTokens = inputTokens + cachedInputTokens + outputTokens + reasoningTokens
+          const totalTokens = inputTokens + cachedInputTokens + cacheWriteInputTokens + outputTokens + reasoningTokens
           if (totalTokens === 0) continue
 
           // OpenAI includes cached tokens inside input_tokens; Anthropic does not.
@@ -944,7 +1082,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
           // are computed against a running `prev` that the fork advances
           // differently once the 5s cutoff skips some replays, so a delta-based
           // key would spuriously diverge on a replay and double-count it.
-          const dedupKey = `codex:${forkedFromId || sessionId}:${cumulativeTotal}:${total?.input_tokens ?? 0}:${total?.cached_input_tokens ?? 0}:${total?.output_tokens ?? 0}:${total?.reasoning_output_tokens ?? 0}`
+          const dedupKey = `codex:${forkedFromId || sessionId}:${cumulativeTotal}:${total?.input_tokens ?? 0}:${total?.cached_input_tokens ?? 0}:${total?.cache_write_input_tokens ?? 0}:${total?.output_tokens ?? 0}:${total?.reasoning_output_tokens ?? 0}`
 
           if (seenKeys.has(dedupKey)) continue
           seenKeys.add(dedupKey)
@@ -952,8 +1090,8 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
           const costUSD = calculateCost(
             model,
             uncachedInputTokens,
-            outputTokens + reasoningTokens,
-            0,
+            outputTokens,
+            cacheWriteInputTokens,
             cachedInputTokens,
             0,
           )
@@ -963,10 +1101,11 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
             model,
             inputTokens: uncachedInputTokens,
             outputTokens,
-            cacheCreationInputTokens: 0,
+            cacheCreationInputTokens: cacheWriteInputTokens,
             cacheReadInputTokens: cachedInputTokens,
             cachedInputTokens,
             reasoningTokens,
+            totalTokens: total?.total_tokens,
             webSearchRequests: 0,
             costUSD,
             tools: pendingTools,
@@ -974,6 +1113,8 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
             timestamp,
             speed: 'standard',
             deduplicationKey: dedupKey,
+            usageSource: 'token_count_estimate',
+            costIsEstimated: true,
             turnId: currentTurnId,
             toolSequence: pendingToolSequence.length > 0 ? pendingToolSequence : undefined,
             userMessage: pendingUserMessage,

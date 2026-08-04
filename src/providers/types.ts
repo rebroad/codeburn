@@ -23,9 +23,16 @@ export type ParsedProviderCall = {
   cacheReadInputTokens: number
   cachedInputTokens: number
   reasoningTokens: number
+  totalTokens?: number
   webSearchRequests: number
   costUSD: number
   costIsEstimated?: boolean
+  usageSource?: 'raw_response_completed' | 'token_count_estimate'
+  usageUnknown?: boolean
+  responseId?: string
+  requestKind?: 'normal' | 'local_compaction' | 'remote_compaction_v2' | 'other'
+  modelProvider?: string
+  serviceTier?: string
   tools: string[]
   bashCommands: string[]
   // Subagent types spawned in this call (e.g. 'general-purpose'). Feeds the

@@ -153,7 +153,8 @@ export type CodexCreditTokens = {
   cachedReadTokens: number
   cacheWriteTokens?: number
   outputTokens: number
-  /// Reasoning tokens are billed as output, matching CodeBurn's cost model.
+  /// Reasoning tokens are a reported output breakdown. Do not add them to
+  /// outputTokens unless a provider price explicitly requires that treatment.
   reasoningTokens?: number
 }
 
@@ -166,7 +167,7 @@ export function codexCredits(model: string, tokens: CodexCreditTokens): number |
   const PER_MILLION = 1_000_000
   const cacheWrites = safe(tokens.cacheWriteTokens ?? 0)
   if (cacheWrites > 0 && rate.cacheWrite === null) return null
-  const output = safe(tokens.outputTokens) + safe(tokens.reasoningTokens ?? 0)
+  const output = safe(tokens.outputTokens)
   return (
     (safe(tokens.inputTokens) / PER_MILLION) * rate.input +
     (safe(tokens.cachedReadTokens) / PER_MILLION) * rate.cachedInput +

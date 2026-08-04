@@ -48,9 +48,9 @@ describe('codexCredits', () => {
     expect(codexCredits('gpt-5.6-luna', { inputTokens: 0, cachedReadTokens: 0, cacheWriteTokens: 1_000_000, outputTokens: 0 })).toBe(6.25)
   })
 
-  it('folds reasoning tokens into the output rate', () => {
-    // 500k output + 500k reasoning = 1M output-billed => 750 credits.
-    expect(codexCredits('gpt-5.5', { inputTokens: 0, cachedReadTokens: 0, outputTokens: 500_000, reasoningTokens: 500_000 })).toBe(750)
+  it('keeps reasoning as a breakdown instead of adding it to output billing', () => {
+    // Reasoning is included in the provider output breakdown, not billed twice.
+    expect(codexCredits('gpt-5.5', { inputTokens: 0, cachedReadTokens: 0, outputTokens: 500_000, reasoningTokens: 500_000 })).toBe(375)
   })
 
   it('sums a mixed record (gpt-5.4)', () => {
