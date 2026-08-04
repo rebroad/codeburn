@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { calculateCost, getModelCosts } from './models.js'
-import { codexCostUsd, codexCreditRate, refreshCodexPricing } from './codex-credits.js'
+import { codexCostUsd, codexCreditRate, codexCredits, refreshCodexPricing } from './codex-credits.js'
 
 type TokenUsage = {
   input_tokens?: number
@@ -154,8 +154,11 @@ export function processCodexLine(
       reasoningTokens,
       totalTokens: usage?.total_tokens,
       costUsd,
-      // Rollout tokens cannot establish the backend's account credit balance.
-      credits: null,
+      // This is reconstructed consumption from the exact token usage and the
+      // published per-model credit rate, not the account's balance.
+      credits: usage && creditRate && (cacheWriteTokens === 0 || creditRate.cacheWrite !== null)
+        ? codexCredits(resolvedModel, creditTokens)
+        : null,
       usageSource: 'raw_response_completed',
       usageUnknown: !usage,
       responseId,
