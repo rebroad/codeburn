@@ -31,6 +31,19 @@ function rawResponse(responseId: string, usage?: Record<string, number>): string
   })
 }
 
+function routedRawResponse(responseId: string, model: string): string {
+  return JSON.stringify({
+    type: 'event_msg',
+    timestamp: '2026-08-04T12:00:02.000Z',
+    payload: {
+      type: 'raw_response_completed',
+      response_id: responseId,
+      effective_model: model,
+      token_usage: { input_tokens: 100, output_tokens: 20, total_tokens: 120 },
+    },
+  })
+}
+
 describe('Codex live usage processing', () => {
   it('primes session metadata and normalizes cached input', () => {
     const state: CodexWatchState = {}
@@ -91,6 +104,12 @@ describe('Codex live usage processing', () => {
     const state: CodexWatchState = { model: 'gpt-5.6-luna' }
     const record = processCodexLine(state, rawResponse('resp-missing'), '/rollout.jsonl')
     expect(record).toMatchObject({ usageUnknown: true, costUsd: null, totalTokens: undefined })
+  })
+
+  it('uses the backend effective model for routed completions', () => {
+    const state: CodexWatchState = { model: 'codex-auto-review' }
+    const record = processCodexLine(state, routedRawResponse('resp-routed', 'gpt-5.6-luna'), '/rollout.jsonl')
+    expect(record).toMatchObject({ model: 'gpt-5.6-luna', costUsd: expect.any(Number) })
   })
 
   it('tracks cache-write tokens separately', () => {

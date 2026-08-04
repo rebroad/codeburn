@@ -104,7 +104,7 @@ export function processCodexLine(
 
   const sessionId = stringValue(payload['session_id'])
   const projectPath = stringValue(payload['cwd'])
-  const model = stringValue(payload['model'])
+  const model = stringValue(payload['effective_model']) ?? stringValue(payload['model'])
   if (sessionId) state.sessionId = sessionId
   if (projectPath) state.projectPath = projectPath
   if (model) state.model = model
