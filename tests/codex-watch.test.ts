@@ -24,13 +24,14 @@ function tokens(
   })
 }
 
-function rawResponse(responseId: string, usage?: Record<string, number>): string {
+function rawResponse(responseId: string, usage?: Record<string, number>, effectiveModel?: string): string {
   return JSON.stringify({
     type: 'event_msg',
     timestamp: '2026-08-04T12:00:01.000Z',
     payload: {
       type: 'raw_response_completed',
       response_id: responseId,
+      ...(effectiveModel ? { effective_model: effectiveModel } : {}),
       ...(usage ? { token_usage: usage } : {}),
     },
   })
@@ -70,7 +71,7 @@ describe('Codex live usage processing', () => {
       output_tokens: 200,
       reasoning_output_tokens: 50,
       total_tokens: 1680,
-    }), '/rollout.jsonl')
+    }, 'gpt-5.6-luna'), '/rollout.jsonl')
 
     expect(record).toMatchObject({
       responseId: 'resp-1',
@@ -82,7 +83,7 @@ describe('Codex live usage processing', () => {
       reasoningTokens: 50,
       totalTokens: 1680,
     })
-    expect(record?.credits).toBeNull()
+    expect(record?.credits).toBeCloseTo(0.0093875, 8)
     expect(processCodexLine(state, tokens(undefined, {
       input_tokens: 1000, cached_input_tokens: 400, output_tokens: 200,
       reasoning_output_tokens: 50, total_tokens: 1650,
@@ -102,6 +103,7 @@ describe('Codex live usage processing', () => {
     const state: CodexWatchState = { model: 'codex-auto-review' }
     const record = processCodexLine(state, routedRawResponse('resp-routed', 'gpt-5.6-luna'), '/rollout.jsonl')
     expect(record).toMatchObject({ model: 'gpt-5.6-luna', costUsd: expect.any(Number) })
+    expect(record?.credits).toBeCloseTo(0.0011, 8)
   })
 
   it('tracks cache-write tokens separately', () => {
