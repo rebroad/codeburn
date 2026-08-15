@@ -195,6 +195,24 @@ describe('Codex live usage processing', () => {
     expect(record?.model).toBe('gpt-5.6-luna')
   })
 
+  it('keeps the latest model setting after later rollout records', () => {
+    const state: CodexWatchState = { model: 'gpt-5.6-sol' }
+    processCodexLine(state, JSON.stringify({
+      type: 'event_msg',
+      payload: { type: 'thread_settings_applied', thread_settings: { model: 'gpt-5.6-luna' } },
+    }), '/rollout.jsonl')
+    processCodexLine(state, JSON.stringify({
+      type: 'event_msg',
+      payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 1 } } },
+    }), '/rollout.jsonl')
+
+    const record = processCodexLine(state, rawResponse('resp-latest-model', {
+      input_tokens: 100, output_tokens: 20, total_tokens: 120,
+    }), '/rollout.jsonl')
+
+    expect(record?.model).toBe('gpt-5.6-luna')
+  })
+
   it('reads the session id from session metadata id', () => {
     const state: CodexWatchState = {}
     processCodexLine(state, JSON.stringify({

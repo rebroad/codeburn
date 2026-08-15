@@ -115,21 +115,23 @@ function updateStateFromPayload(
   const sessionId = stringValue(payload['session_id'])
     ?? (entryType === 'session_meta' ? stringValue(payload['id']) : undefined)
   const projectPath = stringValue(payload['cwd'])
-  const model = stringValue(payload['effective_model']) ?? stringValue(payload['model'])
+  const model = modelFromPayload(payload)
   if (sessionId) state.sessionId = sessionId
   if (projectPath) state.projectPath = projectPath
   if (model) state.model = model
+}
 
+function modelFromPayload(payload: Record<string, unknown>): string | undefined {
   const info = payload['info'] as Record<string, unknown> | undefined
-  const infoModel = info && (
-    stringValue(info['effective_model'])
-    ?? stringValue(info['model'])
-    ?? stringValue(info['model_name'])
-  )
   const threadSettings = payload['thread_settings'] as Record<string, unknown> | undefined
-  const threadSettingsModel = threadSettings && stringValue(threadSettings['model'])
-  if (infoModel) state.model = infoModel
-  if (threadSettingsModel) state.model = threadSettingsModel
+  return stringValue(payload['effective_model'])
+    ?? stringValue(payload['model'])
+    ?? (info && (
+      stringValue(info['effective_model'])
+      ?? stringValue(info['model'])
+      ?? stringValue(info['model_name'])
+    ))
+    ?? (threadSettings && stringValue(threadSettings['model']))
 }
 
 export function processCodexLine(
@@ -293,36 +295,69 @@ async function primeFile(filePath: string, state: FileState): Promise<void> {
   if (!handle) return
   try {
     const windowSize = 4 * 1024 * 1024
-    const ranges: Array<[number, number]> = [[0, Math.min(state.offset, windowSize)]]
-    const tailStart = Math.max(0, state.offset - windowSize)
-    if (tailStart > 0) ranges.push([tailStart, state.offset - tailStart])
+    const buffer = Buffer.alloc(Math.min(state.offset, windowSize))
+    await handle.read(buffer, 0, buffer.length, 0)
+    for (const line of buffer.toString('utf8').split('\n')) {
+      primeLine(state.usage, line)
+    }
 
-    for (const [position, length] of ranges) {
-      const buffer = Buffer.alloc(length)
-      await handle.read(buffer, 0, length, position)
-      for (const line of buffer.toString('utf8').split('\n')) {
-        if (!line) continue
-        let entry: Record<string, unknown>
-        try {
-          entry = JSON.parse(line) as Record<string, unknown>
-        } catch {
-          continue
-        }
-        const payload = entry['payload'] as Record<string, unknown> | undefined
-        if (!payload) continue
-        updateStateFromPayload(state.usage, stringValue(entry['type']), payload)
-        if (payload['type'] === 'raw_response_completed') {
-          state.usage.sawRawResponse = true
-          const responseId = stringValue(payload['response_id'])
-          if (responseId) {
-            state.usage.rawResponseIds ??= new Set<string>()
-            state.usage.rawResponseIds.add(responseId)
-          }
+    // The newest model setting may be far older than the end of a large
+    // rollout. Scan backwards until the first model-bearing record, which is
+    // the latest model change, without loading the whole file.
+    const chunkSize = 1024 * 1024
+    let end = state.offset
+    let suffix = ''
+    let latestModel: string | undefined
+    while (end > 0 && !latestModel) {
+      const start = Math.max(0, end - chunkSize)
+      const chunk = Buffer.alloc(end - start)
+      await handle.read(chunk, 0, chunk.length, start)
+      const lines = (chunk.toString('utf8') + suffix).split('\n')
+      suffix = start > 0 ? (lines.shift() ?? '') : ''
+      for (let index = lines.length - 1; index >= 0; index -= 1) {
+        const model = parseModelLine(lines[index] ?? '')
+        if (model) {
+          latestModel = model
+          break
         }
       }
+      end = start
     }
+    if (latestModel) state.usage.model = latestModel
   } finally {
     await handle.close()
+  }
+}
+
+function parseModelLine(line: string): string | undefined {
+  if (!line) return undefined
+  try {
+    const entry = JSON.parse(line) as Record<string, unknown>
+    const payload = entry['payload'] as Record<string, unknown> | undefined
+    return payload ? modelFromPayload(payload) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function primeLine(state: CodexWatchState, line: string): void {
+  if (!line) return
+  let entry: Record<string, unknown>
+  try {
+    entry = JSON.parse(line) as Record<string, unknown>
+  } catch {
+    return
+  }
+  const payload = entry['payload'] as Record<string, unknown> | undefined
+  if (!payload) return
+  updateStateFromPayload(state, stringValue(entry['type']), payload)
+  if (payload['type'] === 'raw_response_completed') {
+    state.sawRawResponse = true
+    const responseId = stringValue(payload['response_id'])
+    if (responseId) {
+      state.rawResponseIds ??= new Set<string>()
+      state.rawResponseIds.add(responseId)
+    }
   }
 }
 
