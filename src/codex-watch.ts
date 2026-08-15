@@ -126,7 +126,10 @@ function updateStateFromPayload(
     ?? stringValue(info['model'])
     ?? stringValue(info['model_name'])
   )
+  const threadSettings = payload['thread_settings'] as Record<string, unknown> | undefined
+  const threadSettingsModel = threadSettings && stringValue(threadSettings['model'])
   if (infoModel) state.model = infoModel
+  if (threadSettingsModel) state.model = threadSettingsModel
 }
 
 export function processCodexLine(
