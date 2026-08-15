@@ -111,14 +111,17 @@ function updateStateFromPayload(
   state: CodexWatchState,
   entryType: string | undefined,
   payload: Record<string, unknown>,
+  updateModel = true,
 ): void {
   const sessionId = stringValue(payload['session_id'])
     ?? (entryType === 'session_meta' ? stringValue(payload['id']) : undefined)
   const projectPath = stringValue(payload['cwd'])
-  const model = modelFromPayload(payload)
   if (sessionId) state.sessionId = sessionId
   if (projectPath) state.projectPath = projectPath
-  if (model) state.model = model
+  if (updateModel) {
+    const model = modelFromPayload(payload)
+    if (model) state.model = model
+  }
 }
 
 function modelFromPayload(payload: Record<string, unknown>): string | undefined {
@@ -350,7 +353,9 @@ function primeLine(state: CodexWatchState, line: string): void {
   }
   const payload = entry['payload'] as Record<string, unknown> | undefined
   if (!payload) return
-  updateStateFromPayload(state, stringValue(entry['type']), payload)
+  // Prefix priming is only for session identity and deduplication. Model
+  // selection is deliberately owned by the reverse scan from EOF.
+  updateStateFromPayload(state, stringValue(entry['type']), payload, false)
   if (payload['type'] === 'raw_response_completed') {
     state.sawRawResponse = true
     const responseId = stringValue(payload['response_id'])
