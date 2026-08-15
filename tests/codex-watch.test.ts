@@ -178,6 +178,23 @@ describe('Codex live usage processing', () => {
     expect(second?.model).toBe('gpt-5.6-luna')
   })
 
+  it('updates the active model from thread settings applied events', () => {
+    const state: CodexWatchState = { model: 'gpt-5.4' }
+    processCodexLine(state, JSON.stringify({
+      type: 'event_msg',
+      payload: {
+        type: 'thread_settings_applied',
+        thread_settings: { model: 'gpt-5.6-luna' },
+      },
+    }), '/rollout.jsonl')
+
+    const record = processCodexLine(state, rawResponse('resp-settings-model', {
+      input_tokens: 100, output_tokens: 20, total_tokens: 120,
+    }), '/rollout.jsonl')
+
+    expect(record?.model).toBe('gpt-5.6-luna')
+  })
+
   it('reads the session id from session metadata id', () => {
     const state: CodexWatchState = {}
     processCodexLine(state, JSON.stringify({
