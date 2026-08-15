@@ -107,6 +107,28 @@ function resolvedModel(state: CodexWatchState): string {
   return state.modelAliases?.[model.toLowerCase()] ?? model
 }
 
+function updateStateFromPayload(
+  state: CodexWatchState,
+  entryType: string | undefined,
+  payload: Record<string, unknown>,
+): void {
+  const sessionId = stringValue(payload['session_id'])
+    ?? (entryType === 'session_meta' ? stringValue(payload['id']) : undefined)
+  const projectPath = stringValue(payload['cwd'])
+  const model = stringValue(payload['effective_model']) ?? stringValue(payload['model'])
+  if (sessionId) state.sessionId = sessionId
+  if (projectPath) state.projectPath = projectPath
+  if (model) state.model = model
+
+  const info = payload['info'] as Record<string, unknown> | undefined
+  const infoModel = info && (
+    stringValue(info['effective_model'])
+    ?? stringValue(info['model'])
+    ?? stringValue(info['model_name'])
+  )
+  if (infoModel) state.model = infoModel
+}
+
 export function processCodexLine(
   state: CodexWatchState,
   line: string,
@@ -124,12 +146,7 @@ export function processCodexLine(
   const payload = entry['payload'] as Record<string, unknown> | undefined
   if (!payload) return null
 
-  const sessionId = stringValue(payload['session_id'])
-  const projectPath = stringValue(payload['cwd'])
-  const model = stringValue(payload['effective_model']) ?? stringValue(payload['model'])
-  if (sessionId) state.sessionId = sessionId
-  if (projectPath) state.projectPath = projectPath
-  if (model) state.model = model
+  updateStateFromPayload(state, stringValue(entry['type']), payload)
 
   if (entry['type'] === 'event_msg' && payload['type'] === 'raw_response_completed') {
     state.sawRawResponse = true
@@ -272,40 +289,34 @@ async function primeFile(filePath: string, state: FileState): Promise<void> {
   const handle = await open(filePath, 'r').catch(() => null)
   if (!handle) return
   try {
-    const buffer = Buffer.alloc(Math.min(state.offset, 4 * 1024 * 1024))
-    await handle.read(buffer, 0, buffer.length, 0)
-    for (const line of buffer.toString('utf8').split('\n')) {
-      if (!line) continue
-      let entry: Record<string, unknown>
-      try {
-        entry = JSON.parse(line) as Record<string, unknown>
-      } catch {
-        continue
-      }
-      const payload = entry['payload'] as Record<string, unknown> | undefined
-      if (!payload) continue
-      const sessionId = stringValue(payload['session_id'])
-      const projectPath = stringValue(payload['cwd'])
-      const model = stringValue(payload['model']) ?? stringValue(payload['model_name'])
-      if (sessionId) state.usage.sessionId = sessionId
-      if (projectPath) state.usage.projectPath = projectPath
-      if (model) state.usage.model = model
-      if (payload['type'] === 'raw_response_completed') {
-        state.usage.sawRawResponse = true
-        const responseId = stringValue(payload['response_id'])
-        if (responseId) {
-          state.usage.rawResponseIds ??= new Set<string>()
-          state.usage.rawResponseIds.add(responseId)
+    const windowSize = 4 * 1024 * 1024
+    const ranges: Array<[number, number]> = [[0, Math.min(state.offset, windowSize)]]
+    const tailStart = Math.max(0, state.offset - windowSize)
+    if (tailStart > 0) ranges.push([tailStart, state.offset - tailStart])
+
+    for (const [position, length] of ranges) {
+      const buffer = Buffer.alloc(length)
+      await handle.read(buffer, 0, length, position)
+      for (const line of buffer.toString('utf8').split('\n')) {
+        if (!line) continue
+        let entry: Record<string, unknown>
+        try {
+          entry = JSON.parse(line) as Record<string, unknown>
+        } catch {
+          continue
+        }
+        const payload = entry['payload'] as Record<string, unknown> | undefined
+        if (!payload) continue
+        updateStateFromPayload(state.usage, stringValue(entry['type']), payload)
+        if (payload['type'] === 'raw_response_completed') {
+          state.usage.sawRawResponse = true
+          const responseId = stringValue(payload['response_id'])
+          if (responseId) {
+            state.usage.rawResponseIds ??= new Set<string>()
+            state.usage.rawResponseIds.add(responseId)
+          }
         }
       }
-      const info = payload['info'] as Record<string, unknown> | undefined
-      const infoModel = info && (
-        stringValue(payload['effective_model'])
-        ?? stringValue(info['effective_model'])
-        ?? stringValue(info['model'])
-        ?? stringValue(info['model_name'])
-      )
-      if (infoModel) state.usage.model = infoModel
     }
   } finally {
     await handle.close()

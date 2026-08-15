@@ -156,6 +156,41 @@ describe('Codex live usage processing', () => {
     expect(record?.model).toBe('gpt-5.6-luna')
   })
 
+  it('attributes each completion to the model active for that turn', () => {
+    const state: CodexWatchState = {}
+    processCodexLine(state, JSON.stringify({
+      type: 'turn_context',
+      payload: { model: 'gpt-5.4' },
+    }), '/rollout.jsonl')
+    const first = processCodexLine(state, rawResponse('resp-old', {
+      input_tokens: 100, output_tokens: 20, total_tokens: 120,
+    }), '/rollout.jsonl')
+
+    processCodexLine(state, JSON.stringify({
+      type: 'turn_context',
+      payload: { model: 'gpt-5.6-luna' },
+    }), '/rollout.jsonl')
+    const second = processCodexLine(state, rawResponse('resp-new', {
+      input_tokens: 100, output_tokens: 20, total_tokens: 120,
+    }), '/rollout.jsonl')
+
+    expect(first?.model).toBe('gpt-5.4')
+    expect(second?.model).toBe('gpt-5.6-luna')
+  })
+
+  it('reads the session id from session metadata id', () => {
+    const state: CodexWatchState = {}
+    processCodexLine(state, JSON.stringify({
+      type: 'session_meta',
+      payload: { id: 'session-from-metadata', cwd: '/work/project', model: 'gpt-5.6-luna' },
+    }), '/rollout.jsonl')
+    const record = processCodexLine(state, rawResponse('resp-session-id', {
+      input_tokens: 100, output_tokens: 20, total_tokens: 120,
+    }), '/rollout.jsonl')
+
+    expect(record?.sessionId).toBe('session-from-metadata')
+  })
+
   it('does not report an unknown Codex catalog slug as zero cost', () => {
     const state: CodexWatchState = {}
     processCodexLine(state, JSON.stringify({
