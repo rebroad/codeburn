@@ -1,5 +1,15 @@
+import { mkdtemp, stat, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { StringDecoder } from 'node:string_decoder'
 import { describe, expect, it } from 'vitest'
-import { formatCodexUsageRecord, processCodexLine, type CodexWatchState } from '../src/codex-watch.js'
+import {
+  formatCodexUsageRecord,
+  processCodexLine,
+  readAppended,
+  type CodexWatchFileState,
+  type CodexWatchState,
+} from '../src/codex-watch.js'
 
 function meta(): string {
   return JSON.stringify({
@@ -51,6 +61,33 @@ function routedRawResponse(responseId: string, model: string): string {
 }
 
 describe('Codex live usage processing', () => {
+  it('streams a large append without materializing all lines at once', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'codeburn-codex-watch-'))
+    const filePath = join(directory, 'rollout-test.jsonl')
+    const lineCount = 120_000
+    await writeFile(filePath, '{"type":"ignored"}\n'.repeat(lineCount), 'utf8')
+    const file = await stat(filePath)
+    const state: CodexWatchFileState = {
+      offset: 0,
+      pending: '',
+      decoder: new StringDecoder('utf8'),
+      device: file.dev,
+      inode: file.ino,
+      discardingOversizeLine: false,
+      usage: {},
+    }
+    let received = 0
+
+    await readAppended(filePath, state, async (line) => {
+      expect(line).toBe('{"type":"ignored"}')
+      received += 1
+    })
+
+    expect(received).toBe(lineCount)
+    expect(state.offset).toBe(file.size)
+    expect(state.pending).toBe('')
+  })
+
   it('does not bill cumulative token-count snapshots', () => {
     const state: CodexWatchState = {}
     expect(processCodexLine(state, meta(), '/rollout.jsonl')).toBeNull()
