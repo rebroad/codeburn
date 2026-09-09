@@ -2,6 +2,7 @@ import { appendFile, mkdir, open, readFile, readdir, stat } from 'node:fs/promis
 import { createHash } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
+import { StringDecoder } from 'node:string_decoder'
 import { calculateCost, getModelCosts } from './models.js'
 import { codexCostUsd, codexCreditRate, codexCredits, refreshCodexPricing } from './codex-credits.js'
 
@@ -53,11 +54,18 @@ export type CodexWatchOptions = {
   ledgerPath?: string
 }
 
-type FileState = {
+export type CodexWatchFileState = {
   offset: number
   pending: string
+  decoder: StringDecoder
+  device: number
+  inode: number
+  discardingOversizeLine: boolean
   usage: CodexWatchState
 }
+
+const READ_CHUNK_SIZE = 1024 * 1024
+const MAX_PENDING_LINE_BYTES = 16 * 1024 * 1024
 
 function codexHome(): string {
   return process.env['CODEX_HOME'] ?? join(homedir(), '.codex')
@@ -265,34 +273,61 @@ export function formatCodexUsageRecord(record: CodexUsageRecord, format: string)
   return template.replace(/%([%tlmspicowrdCf])/g, (_match, key: string) => displayValue(values[key] ?? null))
 }
 
-async function readAppended(filePath: string, state: FileState): Promise<string[]> {
+function resetFileState(state: CodexWatchFileState, file: { dev: number; ino: number }): void {
+  state.offset = 0
+  state.pending = ''
+  state.decoder = new StringDecoder('utf8')
+  state.device = file.dev
+  state.inode = file.ino
+  state.discardingOversizeLine = false
+  state.usage = { modelAliases: state.usage.modelAliases }
+}
+
+export async function readAppended(
+  filePath: string,
+  state: CodexWatchFileState,
+  onLine: (line: string) => Promise<void>,
+): Promise<void> {
   const file = await stat(filePath).catch(() => null)
-  if (!file) return []
-  if (file.size < state.offset) {
-    state.offset = 0
-    state.pending = ''
-    state.usage = { modelAliases: state.usage.modelAliases }
+  if (!file) return
+  if (file.size < state.offset || file.dev !== state.device || file.ino !== state.inode) {
+    resetFileState(state, file)
   }
-  if (file.size === state.offset) return []
+  if (file.size === state.offset) return
 
   const handle = await open(filePath, 'r')
   try {
-    const buffer = Buffer.alloc(file.size - state.offset)
-    await handle.read(buffer, 0, buffer.length, state.offset)
-    const oldPendingBytes = Buffer.byteLength(state.pending)
-    const combined = state.pending + buffer.toString('utf8')
-    const lastNewline = combined.lastIndexOf('\n')
-    if (lastNewline < 0) return []
-    const complete = combined.slice(0, lastNewline + 1)
-    state.pending = combined.slice(lastNewline + 1)
-    state.offset += Buffer.byteLength(complete) - oldPendingBytes
-    return complete.split('\n').filter(Boolean)
+    const buffer = Buffer.alloc(READ_CHUNK_SIZE)
+    while (state.offset < file.size) {
+      const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, file.size - state.offset), state.offset)
+      if (bytesRead === 0) break
+      state.offset += bytesRead
+      state.pending += state.decoder.write(buffer.subarray(0, bytesRead))
+
+      while (true) {
+        const newline = state.pending.indexOf('\n')
+        if (newline < 0) {
+          if (Buffer.byteLength(state.pending, 'utf8') > MAX_PENDING_LINE_BYTES) {
+            state.pending = ''
+            state.discardingOversizeLine = true
+          }
+          break
+        }
+        const line = state.pending.slice(0, newline)
+        state.pending = state.pending.slice(newline + 1)
+        if (state.discardingOversizeLine) {
+          state.discardingOversizeLine = false
+        } else if (Buffer.byteLength(line, 'utf8') <= MAX_PENDING_LINE_BYTES) {
+          await onLine(line)
+        }
+      }
+    }
   } finally {
     await handle.close()
   }
 }
 
-async function primeFile(filePath: string, state: FileState): Promise<void> {
+async function primeFile(filePath: string, state: CodexWatchFileState): Promise<void> {
   if (state.offset === 0) return
   const handle = await open(filePath, 'r').catch(() => null)
   if (!handle) return
@@ -394,7 +429,7 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
   await refreshCodexPricing()
   const modelAliases = await loadCodexModelAliases()
 
-  const files = new Map<string, FileState>()
+  const files = new Map<string, CodexWatchFileState>()
   const registerNewFiles = async (): Promise<void> => {
     for (const path of await discoverRollouts(codexHome())) {
       if (files.has(path)) continue
@@ -403,6 +438,10 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
         const state = {
           offset: file.size,
           pending: '',
+          decoder: new StringDecoder('utf8'),
+          device: file.dev,
+          inode: file.ino,
+          discardingOversizeLine: false,
           usage: { modelAliases } as CodexWatchState,
         }
         await primeFile(path, state)
@@ -414,10 +453,9 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
   const flush = async (): Promise<void> => {
     await registerNewFiles()
     for (const [path, state] of files) {
-      const lines = await readAppended(path, state)
-      for (const line of lines) {
+      await readAppended(path, state, async (line) => {
         const record = processCodexLine(state.usage, line, path)
-        if (!record) continue
+        if (!record) return
         if (ledgerPath) {
           await appendFile(ledgerPath, JSON.stringify({
             event_id: record.eventId,
@@ -448,14 +486,21 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
         const serialized = formatCodexUsageRecord(record, format) + '\n'
         if (outputPath) await appendFile(outputPath, serialized, 'utf8')
         else process.stdout.write(serialized)
-      }
+      })
     }
   }
 
   await flush()
   process.stderr.write(`Watching Codex sessions; ${outputPath ? `logging to ${outputPath}` : 'writing records to stdout'}${ledgerPath ? `; accounting to ${ledgerPath}` : ''} (Ctrl-C to stop)\n`)
   await new Promise<void>((resolve) => {
-    const timer = setInterval(() => { void flush().catch(error => process.stderr.write(`codeburn watch: ${String(error)}\n`)) }, pollMs)
+    let flushInFlight = false
+    const timer = setInterval(() => {
+      if (flushInFlight) return
+      flushInFlight = true
+      void flush()
+        .catch(error => process.stderr.write(`codeburn watch: ${String(error)}\n`))
+        .finally(() => { flushInFlight = false })
+    }, pollMs)
     const stop = () => { clearInterval(timer); resolve() }
     process.once('SIGINT', stop)
     process.once('SIGTERM', stop)
