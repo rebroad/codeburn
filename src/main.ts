@@ -2357,14 +2357,8 @@ program
   .option('--output <path>', 'Write records to this file instead of stdout')
   .option('--ledger <path>', 'Append accounting events for codex-status (default: ~/.cache/codeburn/codex-usage.jsonl)')
   .option('--format <format>', 'Output format: json, human, or date-style tokens (use --format --help for details)', 'json')
-  .option('--poll <seconds>', 'Polling interval in seconds', parseNumber, 1)
-  .action(async (opts: { output?: string; ledger?: string; format: string; poll: number }) => {
-    if (!Number.isFinite(opts.poll) || opts.poll <= 0) {
-      console.error('watch: --poll must be greater than zero')
-      process.exitCode = 2
-      return
-    }
-    await runCodexWatch({ outputPath: opts.output, ledgerPath: opts.ledger, format: opts.format, pollSeconds: opts.poll })
+  .action(async (opts: { output?: string; ledger?: string; format: string }) => {
+    await runCodexWatch({ outputPath: opts.output, ledgerPath: opts.ledger, format: opts.format })
   })
 
 program
