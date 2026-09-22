@@ -63,6 +63,7 @@ const { version } = require('../package.json')
 // snapshot read/write path and its regression tests agree on the same value
 // without importing the CLI entry point (which parses argv as a side effect).
 const STATUS_SNAPSHOT_SEMANTIC_KEY = statusSnapshotSemanticKey(version)
+const buildCommit = process.env.CODEBURN_COMMIT ?? 'unknown'
 import { loadCurrency, getCurrency, isValidCurrencyCode } from './currency.js'
 import { sessionCountIsExact } from './session-count-label.js'
 import { CodexThroughputReader, newestCodexSession, renderCodexThroughput } from './codex-throughput.js'
@@ -526,7 +527,7 @@ async function runJsonReport(period: Period, provider: string, project: string[]
 const program = new Command()
   .name('codeburn')
   .description('See where your AI coding tokens go - by task, tool, model, and project')
-  .version(version)
+  .version(`${version} (${buildCommit})`)
   .option('--verbose', 'print warnings to stderr on read failures and skipped files')
   .option('--timezone <zone>', 'IANA timezone for date grouping (e.g. Asia/Tokyo, America/New_York)')
 
