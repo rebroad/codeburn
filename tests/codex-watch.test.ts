@@ -323,5 +323,8 @@ describe('Codex live usage processing', () => {
     expect(formatCodexUsageRecord(record, '%t %m i=%i c=%c o=%o r=%r $%d %C')).toBe(
       '2026-08-04T12:00:00.000Z gpt-5.6-luna i=600 c=400 o=200 r=50 $0.005350 0.133750',
     )
+    expect(formatCodexUsageRecord({ ...record, accountId: 'account-one' }, 'account=%a')).toBe(
+      'account=account-one',
+    )
   })
 })
