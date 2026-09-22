@@ -103,7 +103,7 @@ describe('Codex live usage processing', () => {
   })
 
   it('uses exact raw completion usage and suppresses token snapshots', () => {
-    const state: CodexWatchState = {}
+    const state: CodexWatchState = { accountEmails: { 'account-one': 'account@example.test' } }
     processCodexLine(state, meta(), '/rollout.jsonl')
     expect(processCodexLine(state, JSON.stringify({
       type: 'event_msg',
@@ -121,6 +121,7 @@ describe('Codex live usage processing', () => {
     expect(record).toMatchObject({
       responseId: 'resp-1',
       accountId: 'account-one',
+      accountEmail: 'account@example.test',
       usageSource: 'raw_response_completed',
       inputTokens: 600,
       cachedInputTokens: 400,
@@ -323,8 +324,8 @@ describe('Codex live usage processing', () => {
     expect(formatCodexUsageRecord(record, '%t %m i=%i c=%c o=%o r=%r $%d %C')).toBe(
       '2026-08-04T12:00:00.000Z gpt-5.6-luna i=600 c=400 o=200 r=50 $0.005350 0.133750',
     )
-    expect(formatCodexUsageRecord({ ...record, accountId: 'account-one' }, 'account=%a')).toBe(
-      'account=account-one',
+    expect(formatCodexUsageRecord({ ...record, accountId: 'account-one', accountEmail: 'account@example.test' }, 'account=%a')).toBe(
+      'account=account@example.test',
     )
   })
 })

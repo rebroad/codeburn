@@ -17,6 +17,8 @@ type TokenUsage = {
 
 export type CodexWatchState = {
   accountId?: string
+  accountEmail?: string
+  accountEmails?: Record<string, string>
   model?: string
   modelAliases?: Record<string, string>
   sessionId?: string
@@ -45,6 +47,7 @@ export type CodexUsageRecord = {
   usageUnknown?: boolean
   responseId?: string
   accountId?: string
+  accountEmail?: string
   eventId?: string
   source: string
 }
@@ -79,6 +82,45 @@ function numberValue(value: unknown): number {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+function decodeJwtPayload(token: string): Record<string, unknown> | undefined {
+  const encoded = token.split('.')[1]
+  if (!encoded) return undefined
+  try {
+    const decoded = Buffer.from(encoded, 'base64url').toString('utf8')
+    const payload = JSON.parse(decoded) as unknown
+    return payload && typeof payload === 'object' ? payload as Record<string, unknown> : undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function loadCodexAccountEmails(): Promise<Record<string, string>> {
+  try {
+    const auth = JSON.parse(await readFile(join(codexHome(), 'auth.json'), 'utf8')) as Record<string, unknown>
+    const tokens = auth['tokens'] as Record<string, unknown> | undefined
+    if (!tokens) return {}
+    const tokenPayloads = Object.values(tokens)
+      .filter((token): token is string => typeof token === 'string')
+      .map(decodeJwtPayload)
+      .filter((payload): payload is Record<string, unknown> => payload !== undefined)
+    const result: Record<string, string> = {}
+    const tokenAccountId = stringValue(tokens['account_id'])
+    let fallbackEmail: string | undefined
+    for (const payload of tokenPayloads) {
+      const authClaims = payload['https://api.openai.com/auth'] as Record<string, unknown> | undefined
+      const profileClaims = payload['https://api.openai.com/profile'] as Record<string, unknown> | undefined
+      const accountId = stringValue(authClaims?.['chatgpt_account_id'])
+      const email = stringValue(profileClaims?.['email']) ?? stringValue(payload['email'])
+      if (accountId && email) result[accountId] = email
+      if (email) fallbackEmail = email
+    }
+    if (tokenAccountId && fallbackEmail) result[tokenAccountId] = fallbackEmail
+    return result
+  } catch {
+    return {}
+  }
 }
 
 function catalogModelName(displayName: string): string | undefined {
@@ -168,6 +210,7 @@ export function processCodexLine(
 
   if (entry['type'] === 'event_msg' && payload['type'] === 'account_updated') {
     state.accountId = stringValue(payload['account_id'])
+    state.accountEmail = state.accountId ? state.accountEmails?.[state.accountId] : undefined
     return null
   }
 
@@ -240,6 +283,7 @@ export function processCodexLine(
       usageUnknown: !usage,
       responseId,
       accountId: state.accountId,
+      accountEmail: state.accountEmail,
       eventId,
       source,
     }
@@ -257,11 +301,12 @@ export const CODEX_WATCH_FORMAT_HELP = `
 Watch output formats:
 
   json
-    Full JSON record. The backend account is available as accountId when known.
+    Full JSON record. The backend account is available as accountEmail when known;
+    accountId remains available for stable attribution.
 
   human
     Human-readable output using:
-      %t timestamp  %l logged time  %m model  %a backend account
+      %t timestamp  %l logged time  %m model  %a backend account email
       %s session    %p project      %i input  %c cached input
       %w cache write %o output      %r reasoning output
       %d cost in USD %C credits     %f rollout source
@@ -271,8 +316,9 @@ Watch output formats:
     A custom date-style token format, for example:
       +%t %m account=%a input=%i output=%o cost=$%d
 
-The account value is the backend account ID associated with the model request;
-it is '-' when the rollout does not provide one.\n`
+The account value is the email associated with the backend account used by the
+model request; it is the stable account ID when no email mapping is available,
+and '-' when the rollout does not provide an account.\n`
 
 function displayValue(value: string | number | null): string {
   if (value === null) return '-'
@@ -297,7 +343,7 @@ export function formatCodexUsageRecord(record: CodexUsageRecord, format: string)
     r: record.reasoningTokens,
     d: record.costUsd,
     C: record.credits,
-    a: record.accountId,
+    a: record.accountEmail ?? record.accountId,
     f: record.source,
   }
   return template.replace(/%([%tlmspicowrdCaf])/g, (_match, key: string) => displayValue(values[key] ?? null))
@@ -458,6 +504,7 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
   if (ledgerPath) await mkdir(dirname(ledgerPath), { recursive: true })
   await refreshCodexPricing()
   const modelAliases = await loadCodexModelAliases()
+  const accountEmails = await loadCodexAccountEmails()
 
   const files = new Map<string, CodexWatchFileState>()
   const registerNewFiles = async (): Promise<void> => {
@@ -472,7 +519,7 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
           device: file.dev,
           inode: file.ino,
           discardingOversizeLine: false,
-          usage: { modelAliases } as CodexWatchState,
+          usage: { accountEmails, modelAliases } as CodexWatchState,
         }
         await primeFile(path, state)
         files.set(path, state)
