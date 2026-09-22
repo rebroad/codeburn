@@ -46,6 +46,7 @@ import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
 const { version } = require('../package.json')
+const buildCommit = process.env.CODEBURN_COMMIT ?? 'unknown'
 import { loadCurrency, getCurrency, isValidCurrencyCode } from './currency.js'
 import { CodexThroughputReader, newestCodexSession, renderCodexThroughput } from './codex-throughput.js'
 import { runCodexWatch } from './codex-watch.js'
@@ -441,7 +442,7 @@ async function runJsonReport(period: Period, provider: string, project: string[]
 const program = new Command()
   .name('codeburn')
   .description('See where your AI coding tokens go - by task, tool, model, and project')
-  .version(version)
+  .version(`${version} (${buildCommit})`)
   .option('--verbose', 'print warnings to stderr on read failures and skipped files')
   .option('--timezone <zone>', 'IANA timezone for date grouping (e.g. Asia/Tokyo, America/New_York)')
 
