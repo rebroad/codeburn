@@ -34,7 +34,11 @@ function tokens(
   })
 }
 
-function rawResponse(responseId: string, usage?: Record<string, number>, effectiveModel?: string): string {
+function rawResponse(
+  responseId: string,
+  usage?: Record<string, number>,
+  effectiveModel?: string,
+): string {
   return JSON.stringify({
     type: 'event_msg',
     timestamp: '2026-08-04T12:00:01.000Z',
@@ -101,6 +105,10 @@ describe('Codex live usage processing', () => {
   it('uses exact raw completion usage and suppresses token snapshots', () => {
     const state: CodexWatchState = {}
     processCodexLine(state, meta(), '/rollout.jsonl')
+    expect(processCodexLine(state, JSON.stringify({
+      type: 'event_msg',
+      payload: { type: 'account_updated', account_id: 'account-one' },
+    }), '/rollout.jsonl')).toBeNull()
     const record = processCodexLine(state, rawResponse('resp-1', {
       input_tokens: 1000,
       cached_input_tokens: 400,
@@ -112,6 +120,7 @@ describe('Codex live usage processing', () => {
 
     expect(record).toMatchObject({
       responseId: 'resp-1',
+      accountId: 'account-one',
       usageSource: 'raw_response_completed',
       inputTokens: 600,
       cachedInputTokens: 400,

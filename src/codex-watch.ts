@@ -16,6 +16,7 @@ type TokenUsage = {
 }
 
 export type CodexWatchState = {
+  accountId?: string
   model?: string
   modelAliases?: Record<string, string>
   sessionId?: string
@@ -43,6 +44,7 @@ export type CodexUsageRecord = {
   usageSource?: 'raw_response_completed' | 'token_count_estimate'
   usageUnknown?: boolean
   responseId?: string
+  accountId?: string
   eventId?: string
   source: string
 }
@@ -164,6 +166,11 @@ export function processCodexLine(
 
   updateStateFromPayload(state, stringValue(entry['type']), payload)
 
+  if (entry['type'] === 'event_msg' && payload['type'] === 'account_updated') {
+    state.accountId = stringValue(payload['account_id'])
+    return null
+  }
+
   if (entry['type'] === 'event_msg' && payload['type'] === 'raw_response_completed') {
     state.sawRawResponse = true
     const responseId = stringValue(payload['response_id'])
@@ -232,6 +239,7 @@ export function processCodexLine(
       usageSource: 'raw_response_completed',
       usageUnknown: !usage,
       responseId,
+      accountId: state.accountId,
       eventId,
       source,
     }
@@ -459,6 +467,7 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
         if (ledgerPath) {
           await appendFile(ledgerPath, JSON.stringify({
             event_id: record.eventId,
+            ...(record.accountId ? { account_id: record.accountId } : {}),
             provider: 'openai',
             updated_at: Number.isFinite(Date.parse(record.timestamp))
               ? Math.floor(Date.parse(record.timestamp) / 1000)
