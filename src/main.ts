@@ -527,7 +527,7 @@ async function runJsonReport(period: Period, provider: string, project: string[]
 const program = new Command()
   .name('codeburn')
   .description('See where your AI coding tokens go - by task, tool, model, and project')
-  .version(`${version} (${buildCommit})`)
+  .version(`${version} (${buildCommit.slice(0, 10)})`)
   .option('--verbose', 'print warnings to stderr on read failures and skipped files')
   .option('--timezone <zone>', 'IANA timezone for date grouping (e.g. Asia/Tokyo, America/New_York)')
 
