@@ -1,4 +1,5 @@
 import { appendFile, mkdir, open, readFile, readdir, stat } from 'node:fs/promises'
+import { watch, type FSWatcher } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
@@ -54,7 +55,6 @@ export type CodexUsageRecord = {
 
 export type CodexWatchOptions = {
   outputPath?: string
-  pollSeconds?: number
   format?: string
   ledgerPath?: string
 }
@@ -495,10 +495,49 @@ async function discoverRollouts(root: string): Promise<string[]> {
   return files
 }
 
+async function watchRolloutDirectories(
+  root: string,
+  onChange: (path: string) => void,
+): Promise<() => void> {
+  const watchers = new Map<string, FSWatcher>()
+  const addDirectory = async (directory: string, emitExistingFiles: boolean): Promise<void> => {
+    if (watchers.has(directory)) return
+    const entries = await readdir(directory, { withFileTypes: true }).catch(() => [])
+    const watcher = watch(directory, (_event, filename) => {
+      if (!filename) return
+      const path = join(directory, filename.toString())
+      onChange(path)
+      void stat(path).then(info => {
+        if (info.isDirectory()) void addDirectory(path, true)
+      }).catch(() => {})
+    })
+    watcher.on('error', error => {
+      process.stderr.write(`codeburn watch: directory watcher failed for ${directory}: ${String(error)}\n`)
+    })
+    watchers.set(directory, watcher)
+    if (emitExistingFiles) {
+      for (const entry of entries) {
+        if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.endsWith('.jsonl')) {
+          onChange(join(directory, entry.name))
+        }
+      }
+    }
+    await Promise.all(entries
+      .filter(entry => entry.isDirectory())
+      .map(entry => addDirectory(join(directory, entry.name), emitExistingFiles)))
+  }
+
+  for (const directory of [join(root, 'sessions'), join(root, 'archived_sessions')]) {
+    await addDirectory(directory, false)
+  }
+  return () => {
+    for (const watcher of watchers.values()) watcher.close()
+  }
+}
+
 export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<void> {
   const outputPath = options.outputPath
   const format = options.format ?? 'json'
-  const pollMs = Math.max(250, (options.pollSeconds ?? 1) * 1000)
   const ledgerPath = options.ledgerPath ?? join(homedir(), '.cache', 'codeburn', 'codex-usage.jsonl')
   if (outputPath) await mkdir(dirname(outputPath), { recursive: true })
   if (ledgerPath) await mkdir(dirname(ledgerPath), { recursive: true })
@@ -527,10 +566,23 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
     }
   }
 
-  const flush = async (): Promise<void> => {
-    await registerNewFiles()
-    for (const [path, state] of files) {
-      await readAppended(path, state, async (line) => {
+  const registerAndRead = async (path: string): Promise<void> => {
+    let state = files.get(path)
+    if (!state) {
+      const file = await stat(path).catch(() => null)
+      if (!file?.isFile() || !path.split('/').pop()?.startsWith('rollout-') || !path.endsWith('.jsonl')) return
+      state = {
+        offset: 0,
+        pending: '',
+        decoder: new StringDecoder('utf8'),
+        device: file.dev,
+        inode: file.ino,
+        discardingOversizeLine: false,
+        usage: { accountEmails, modelAliases } as CodexWatchState,
+      }
+      files.set(path, state)
+    }
+    await readAppended(path, state, async (line) => {
         const record = processCodexLine(state.usage, line, path)
         if (!record) return
         if (ledgerPath) {
@@ -564,22 +616,38 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
         const serialized = formatCodexUsageRecord(record, format) + '\n'
         if (outputPath) await appendFile(outputPath, serialized, 'utf8')
         else process.stdout.write(serialized)
-      })
-    }
+    })
   }
 
-  await flush()
+  await registerNewFiles()
+  const pendingPaths = new Set<string>()
+  let flushInFlight = false
+  let flushAgain = false
+  const flushPending = async (): Promise<void> => {
+    if (flushInFlight) {
+      flushAgain = true
+      return
+    }
+    flushInFlight = true
+    try {
+      do {
+        flushAgain = false
+        const paths = [...pendingPaths]
+        pendingPaths.clear()
+        await Promise.all(paths.map(path => registerAndRead(path)))
+      } while (flushAgain || pendingPaths.size > 0)
+    } finally {
+      flushInFlight = false
+    }
+  }
+  const schedulePath = (path: string): void => {
+    pendingPaths.add(path)
+    void flushPending().catch(error => process.stderr.write(`codeburn watch: ${String(error)}\n`))
+  }
+  const closeDirectoryWatchers = await watchRolloutDirectories(codexHome(), schedulePath)
   process.stderr.write(`Watching Codex sessions; ${outputPath ? `logging to ${outputPath}` : 'writing records to stdout'}${ledgerPath ? `; accounting to ${ledgerPath}` : ''} (Ctrl-C to stop)\n`)
   await new Promise<void>((resolve) => {
-    let flushInFlight = false
-    const timer = setInterval(() => {
-      if (flushInFlight) return
-      flushInFlight = true
-      void flush()
-        .catch(error => process.stderr.write(`codeburn watch: ${String(error)}\n`))
-        .finally(() => { flushInFlight = false })
-    }, pollMs)
-    const stop = () => { clearInterval(timer); resolve() }
+    const stop = () => { closeDirectoryWatchers(); resolve() }
     process.once('SIGINT', stop)
     process.once('SIGTERM', stop)
   })
