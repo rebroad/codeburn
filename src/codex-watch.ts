@@ -251,7 +251,28 @@ export function processCodexLine(
   return null
 }
 
-const DEFAULT_HUMAN_FORMAT = '%t %m input=%i cached=%c cache_write=%w output=%o reasoning=%r cost=$%d credits=%C'
+const DEFAULT_HUMAN_FORMAT = '%t %m account=%a input=%i cached=%c cache_write=%w output=%o reasoning=%r cost=$%d credits=%C'
+
+export const CODEX_WATCH_FORMAT_HELP = `
+Watch output formats:
+
+  json
+    Full JSON record. The backend account is available as accountId when known.
+
+  human
+    Human-readable output using:
+      %t timestamp  %l logged time  %m model  %a backend account
+      %s session    %p project      %i input  %c cached input
+      %w cache write %o output      %r reasoning output
+      %d cost in USD %C credits     %f rollout source
+      %% literal percent sign
+
+  <format>
+    A custom date-style token format, for example:
+      +%t %m account=%a input=%i output=%o cost=$%d
+
+The account value is the backend account ID associated with the model request;
+it is '-' when the rollout does not provide one.\n`
 
 function displayValue(value: string | number | null): string {
   if (value === null) return '-'
@@ -276,9 +297,10 @@ export function formatCodexUsageRecord(record: CodexUsageRecord, format: string)
     r: record.reasoningTokens,
     d: record.costUsd,
     C: record.credits,
+    a: record.accountId,
     f: record.source,
   }
-  return template.replace(/%([%tlmspicowrdCf])/g, (_match, key: string) => displayValue(values[key] ?? null))
+  return template.replace(/%([%tlmspicowrdCaf])/g, (_match, key: string) => displayValue(values[key] ?? null))
 }
 
 function resetFileState(state: CodexWatchFileState, file: { dev: number; ino: number }): void {

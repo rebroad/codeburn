@@ -67,7 +67,7 @@ const buildCommit = process.env.CODEBURN_COMMIT ?? 'unknown'
 import { loadCurrency, getCurrency, isValidCurrencyCode } from './currency.js'
 import { sessionCountIsExact } from './session-count-label.js'
 import { CodexThroughputReader, newestCodexSession, renderCodexThroughput } from './codex-throughput.js'
-import { runCodexWatch } from './codex-watch.js'
+import { CODEX_WATCH_FORMAT_HELP, runCodexWatch } from './codex-watch.js'
 import { refreshCodexPricing } from './codex-credits.js'
 
 // A downstream reader that closes the pipe early (`| head`, quitting `less`, or
@@ -2356,7 +2356,7 @@ program
   .description('Watch new Codex requests and log token usage and costs in real time')
   .option('--output <path>', 'Write records to this file instead of stdout')
   .option('--ledger <path>', 'Append accounting events for codex-status (default: ~/.cache/codeburn/codex-usage.jsonl)')
-  .option('--format <format>', 'Output format: json, human, or date-style tokens (default: json)', 'json')
+  .option('--format <format>', 'Output format: json, human, or date-style tokens (use --format --help for details)', 'json')
   .option('--poll <seconds>', 'Polling interval in seconds', parseNumber, 1)
   .action(async (opts: { output?: string; ledger?: string; format: string; poll: number }) => {
     if (!Number.isFinite(opts.poll) || opts.poll <= 0) {
@@ -3151,6 +3151,11 @@ if (process.argv[2] === 'serve') {
   hardExit(0)
 } else {
   const program = buildProgram()
+  const args = process.argv.slice(2)
+  if (args[0] === 'watch' && args.includes('--format') && args.includes('--help')) {
+    process.stdout.write(CODEX_WATCH_FORMAT_HELP)
+    process.exit(0)
+  }
   await registerLoadedPluginCommands(program)
   program.parse()
 }
