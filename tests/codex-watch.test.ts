@@ -278,7 +278,7 @@ describe('Codex live usage processing', () => {
     expect(record?.sessionId).toBe('session-from-metadata')
   })
 
-  it('does not report an unknown Codex catalog slug as zero cost', () => {
+  it('prices Codex auto review at the assumed gpt-6-luna rate', () => {
     const state: CodexWatchState = {}
     processCodexLine(state, JSON.stringify({
       type: 'turn_context',
@@ -287,8 +287,9 @@ describe('Codex live usage processing', () => {
     const record = processCodexLine(state, usageRecord('resp-unpriced', {
       input_tokens: 100, output_tokens: 40, total_tokens: 140,
     }), '/rollout.jsonl')
-    expect(record?.costUsd).toBeNull()
-    expect(record?.credits).toBeNull()
+    expect(record).toMatchObject({ model: 'gpt-6-luna', costUsd: expect.any(Number) })
+    expect(record?.costUsd).toBeCloseTo(0.00003, 8)
+    expect(record?.credits).toBeCloseTo(0.00075, 8)
   })
 
   it('resolves a Codex catalog alias before billing', () => {

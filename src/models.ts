@@ -392,14 +392,13 @@ const BUILTIN_ALIASES: Record<string, string> = {
   'warp-auto-powerful':            'claude-opus-4-6',
   // Codex activity ids are product surfaces, not subscription SKUs and not
   // LiteLLM rows. OpenAI's tracker (openai/codex#32224) says auto review
-  // consumes normal model usage. Public evidence: review_model defaults to
-  // the session model; GPT-5.5 is the currently recommended review model.
-  // Price as that existing bundled row. Do not invent a rate. Do not treat
-  // the id as honestly $0 — it draws from the same credit pool. Display
-  // stays on autoModelNames (same class as cursor-auto / copilot-openai-auto).
+  // consumes normal model usage. The rollout records the activity slug but
+  // not its effective model, so for now assume it uses gpt-6-luna, the usual
+  // latest and cheapest OpenAI model. Its display stays on autoModelNames
+  // (same class as cursor-auto / copilot-openai-auto).
   // Only alias ids observed in Codex source / real rollouts. Do not infer
   // `codex-code-review` from the activity name "code review".
-  'codex-auto-review':             'gpt-5.5',
+  'codex-auto-review':             'gpt-6-luna',
   'grok-build':                    'grok-build-0.1',
   // Grok Bot's desktop app serves opaque `sand-*` aliases and records no model
   // id at all, so there is nothing truthful to price it by. It is xAI's own

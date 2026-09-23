@@ -154,9 +154,10 @@ async function loadCodexModelAliases(): Promise<Record<string, string>> {
   }
 }
 
-function resolvedModel(state: CodexWatchState): string {
-  const model = state.model ?? 'unknown'
-  return state.modelAliases?.[model.toLowerCase()] ?? model
+function resolveBillingModel(model: string | undefined, state: CodexWatchState): string {
+  if (!model) return 'unknown'
+  return state.modelAliases?.[model.toLowerCase()]
+    ?? (model.toLowerCase() === 'codex-auto-review' ? 'gpt-6-luna' : model)
 }
 
 function updateStateFromPayload(
@@ -229,7 +230,7 @@ export function processCodexLine(
     const outputTokens = usage ? numberValue(usage.output_tokens) : 0
     const reasoningTokens = usage ? numberValue(usage.reasoning_output_tokens) : 0
     const normalizedInput = Math.max(0, inputTokens - cachedInputTokens)
-    const billingModel = modelFromPayload(payload) ?? resolvedModel(state)
+    const billingModel = resolveBillingModel(modelFromPayload(payload) ?? state.model, state)
     const accountId = stringValue(payload['account_id']) ?? state.accountId
     const accountEmail = accountId
       ? state.accountEmails?.[accountId]
@@ -243,13 +244,8 @@ export function processCodexLine(
       outputTokens,
       reasoningTokens,
     }
-    const unresolvedCatalogSlug = billingModel === 'codex-auto-review'
-      && !modelFromPayload(payload)
-      && !state.modelAliases?.[billingModel]
     const costUsd = usage
-      ? unresolvedCatalogSlug
-        ? null
-        : creditRate && (cacheWriteTokens === 0 || creditRate.cacheWrite !== null)
+      ? creditRate && (cacheWriteTokens === 0 || creditRate.cacheWrite !== null)
         ? codexCostUsd(billingModel, creditTokens)
         : creditRate
           ? null
@@ -285,7 +281,7 @@ export function processCodexLine(
       costUsd,
       // This is reconstructed consumption from the exact token usage and the
       // published per-model credit rate, not the account's balance.
-      credits: usage && !unresolvedCatalogSlug && creditRate && (cacheWriteTokens === 0 || creditRate.cacheWrite !== null)
+      credits: usage && creditRate && (cacheWriteTokens === 0 || creditRate.cacheWrite !== null)
         ? codexCredits(billingModel, creditTokens)
         : null,
       usageSource: 'token_usage_record',
