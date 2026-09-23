@@ -5,6 +5,7 @@ import { StringDecoder } from 'node:string_decoder'
 import { describe, expect, it } from 'vitest'
 import {
   formatCodexUsageRecord,
+  loadCodexAccountInfo,
   processCodexLine,
   readAppended,
   type CodexWatchFileState,
@@ -57,6 +58,12 @@ function usageRecord(
   })
 }
 
+function usageWithoutAccount(responseId: string, usage: Record<string, number>): string {
+  const entry = JSON.parse(usageRecord(responseId, usage)) as { payload: Record<string, unknown> }
+  delete entry.payload['account_id']
+  return JSON.stringify(entry)
+}
+
 function routedUsageRecord(responseId: string, model: string): string {
   return JSON.stringify({
     type: 'token_usage_record',
@@ -75,6 +82,72 @@ function routedUsageRecord(responseId: string, model: string): string {
 }
 
 describe('Codex live usage processing', () => {
+  it('uses auth fallback only when the rollout has no account signal', () => {
+    const state: CodexWatchState = { fallbackAccountId: 'auth-account', accountEmails: { 'auth-account': 'auth@example.test' } }
+    const inferred = processCodexLine(state, usageWithoutAccount('resp-inferred', { input_tokens: 100, output_tokens: 20 }), '/rollout.jsonl')
+    expect(inferred).toMatchObject({ accountId: 'auth-account', accountEmail: 'auth@example.test' })
+
+    const explicit = processCodexLine(state, usageRecord('resp-explicit', { input_tokens: 100, output_tokens: 20 }), '/rollout.jsonl')
+    expect(explicit?.accountId).toBe('account-one')
+  })
+
+  it('uses the latest account update and treats an explicit null as authoritative', () => {
+    const state: CodexWatchState = { fallbackAccountId: 'auth-account' }
+    processCodexLine(state, JSON.stringify({ type: 'event_msg', payload: { type: 'account_updated', account_id: 'rollout-account' } }), '/rollout.jsonl')
+    expect(processCodexLine(state, usageWithoutAccount('resp-updated', { input_tokens: 1 }), '/rollout.jsonl')?.accountId).toBe('rollout-account')
+    processCodexLine(state, JSON.stringify({ type: 'event_msg', payload: { type: 'account_updated', account_id: null } }), '/rollout.jsonl')
+    expect(processCodexLine(state, usageWithoutAccount('resp-null', { input_tokens: 1 }), '/rollout.jsonl')?.accountId).toBeUndefined()
+  })
+
+  it('reads the current auth account and tolerates missing or malformed auth files', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'codeburn-auth-'))
+    const previousHome = process.env['CODEX_HOME']
+    process.env['CODEX_HOME'] = directory
+    try {
+      expect(await loadCodexAccountInfo()).toMatchObject({ emails: {} })
+      await writeFile(join(directory, 'auth.json'), '{broken', 'utf8')
+      expect(await loadCodexAccountInfo()).toMatchObject({ emails: {} })
+      const jwt = `x.${Buffer.from(JSON.stringify({ 'https://api.openai.com/profile': { email: 'active@example.test' } })).toString('base64url')}.x`
+      await writeFile(join(directory, 'auth.json'), JSON.stringify({ tokens: { account_id: 'active-account', access_token: jwt } }), 'utf8')
+      expect(await loadCodexAccountInfo()).toEqual({
+        activeAccountId: 'active-account',
+        emails: { 'active-account': 'active@example.test' },
+      })
+    } finally {
+      if (previousHome === undefined) delete process.env['CODEX_HOME']
+      else process.env['CODEX_HOME'] = previousHome
+    }
+  })
+
+  it('refreshes the inferred account between usage records', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'codeburn-auth-switch-'))
+    const previousHome = process.env['CODEX_HOME']
+    process.env['CODEX_HOME'] = directory
+    const auth = (accountId: string, email: string) => {
+      const jwt = `x.${Buffer.from(JSON.stringify({ 'https://api.openai.com/profile': { email } })).toString('base64url')}.x`
+      return JSON.stringify({ tokens: { account_id: accountId, access_token: jwt } })
+    }
+    try {
+      const state: CodexWatchState = {}
+      await writeFile(join(directory, 'auth.json'), auth('first-account', 'first@example.test'), 'utf8')
+      const first = await loadCodexAccountInfo()
+      state.fallbackAccountId = first.activeAccountId
+      state.accountEmails = first.emails
+      expect(processCodexLine(state, usageWithoutAccount('resp-first-account', { input_tokens: 1 }), '/rollout.jsonl')?.accountId)
+        .toBe('first-account')
+
+      await writeFile(join(directory, 'auth.json'), auth('second-account', 'second@example.test'), 'utf8')
+      const current = await loadCodexAccountInfo()
+      state.fallbackAccountId = current.activeAccountId
+      state.accountEmails = current.emails
+      expect(processCodexLine(state, usageWithoutAccount('resp-second-account', { input_tokens: 1 }), '/rollout.jsonl'))
+        .toMatchObject({ accountId: 'second-account', accountEmail: 'second@example.test' })
+    } finally {
+      if (previousHome === undefined) delete process.env['CODEX_HOME']
+      else process.env['CODEX_HOME'] = previousHome
+    }
+  })
+
   it('streams a large append without materializing all lines at once', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'codeburn-codex-watch-'))
     const filePath = join(directory, 'rollout-test.jsonl')
@@ -169,6 +242,7 @@ describe('Codex live usage processing', () => {
       total_tokens: 200,
     }), '/rollout.jsonl')
     expect(record).toMatchObject({ inputTokens: 80, cachedInputTokens: 20, cacheWriteTokens: 30 })
+    expect(formatCodexUsageRecord(record!, 'cache_write=%w')).toBe('cache_write=30')
   })
 
   it('does not convert cumulative-only snapshots into billable deltas', () => {
