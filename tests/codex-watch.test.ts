@@ -34,32 +34,41 @@ function tokens(
   })
 }
 
-function rawResponse(
+function usageRecord(
   responseId: string,
   usage?: Record<string, number>,
   effectiveModel?: string,
 ): string {
   return JSON.stringify({
-    type: 'event_msg',
+    type: 'token_usage_record',
     timestamp: '2026-08-04T12:00:01.000Z',
     payload: {
-      type: 'raw_response_completed',
+      thread_id: 'thread-1',
+      turn_id: 'turn-1',
+      session_id: 'session-1',
+      root_turn_id: 'turn-1',
+      account_id: 'account-one',
       response_id: responseId,
       ...(effectiveModel ? { effective_model: effectiveModel } : {}),
-      ...(usage ? { token_usage: usage } : {}),
+      ...(usage ? { usage } : {}),
+      usage_metadata: { amount: '0.125000000000000001' },
     },
   })
 }
 
-function routedRawResponse(responseId: string, model: string): string {
+function routedUsageRecord(responseId: string, model: string): string {
   return JSON.stringify({
-    type: 'event_msg',
+    type: 'token_usage_record',
     timestamp: '2026-08-04T12:00:02.000Z',
     payload: {
-      type: 'raw_response_completed',
+      thread_id: 'thread-1',
+      turn_id: 'turn-1',
+      session_id: 'session-1',
+      root_turn_id: 'turn-1',
+      account_id: 'account-one',
       response_id: responseId,
       effective_model: model,
-      token_usage: { input_tokens: 100, output_tokens: 20, total_tokens: 120 },
+      usage: { input_tokens: 100, output_tokens: 20, total_tokens: 120 },
     },
   })
 }
@@ -102,14 +111,14 @@ describe('Codex live usage processing', () => {
     ), '/rollout.jsonl')).toBeNull()
   })
 
-  it('uses exact raw completion usage and suppresses token snapshots', () => {
+  it('uses per-response usage records and suppresses token snapshots', () => {
     const state: CodexWatchState = { accountEmails: { 'account-one': 'account@example.test' } }
     processCodexLine(state, meta(), '/rollout.jsonl')
     expect(processCodexLine(state, JSON.stringify({
       type: 'event_msg',
       payload: { type: 'account_updated', account_id: 'account-one' },
     }), '/rollout.jsonl')).toBeNull()
-    const record = processCodexLine(state, rawResponse('resp-1', {
+    const record = processCodexLine(state, usageRecord('resp-1', {
       input_tokens: 1000,
       cached_input_tokens: 400,
       cache_write_input_tokens: 30,
@@ -122,7 +131,8 @@ describe('Codex live usage processing', () => {
       responseId: 'resp-1',
       accountId: 'account-one',
       accountEmail: 'account@example.test',
-      usageSource: 'raw_response_completed',
+      usageSource: 'token_usage_record',
+      reportedAmount: '0.125000000000000001',
       inputTokens: 600,
       cachedInputTokens: 400,
       cacheWriteTokens: 30,
@@ -135,27 +145,21 @@ describe('Codex live usage processing', () => {
       input_tokens: 1000, cached_input_tokens: 400, output_tokens: 200,
       reasoning_output_tokens: 50, total_tokens: 1650,
     }), '/rollout.jsonl')).toBeNull()
-    expect(processCodexLine(state, rawResponse('resp-1', {
+    expect(processCodexLine(state, usageRecord('resp-1', {
       input_tokens: 1000, output_tokens: 200, total_tokens: 1200,
     }), '/rollout.jsonl')).toBeNull()
   })
 
-  it('keeps missing raw usage unknown rather than zero-priced', () => {
-    const state: CodexWatchState = { model: 'gpt-5.6-luna' }
-    const record = processCodexLine(state, rawResponse('resp-missing'), '/rollout.jsonl')
-    expect(record).toMatchObject({ usageUnknown: true, costUsd: null, totalTokens: undefined })
-  })
-
   it('uses the backend effective model for routed completions', () => {
     const state: CodexWatchState = { model: 'codex-auto-review' }
-    const record = processCodexLine(state, routedRawResponse('resp-routed', 'gpt-5.6-luna'), '/rollout.jsonl')
+    const record = processCodexLine(state, routedUsageRecord('resp-routed', 'gpt-5.6-luna'), '/rollout.jsonl')
     expect(record).toMatchObject({ model: 'gpt-5.6-luna', costUsd: expect.any(Number) })
     expect(record?.credits).toBeCloseTo(0.0011, 8)
   })
 
   it('tracks cache-write tokens separately', () => {
     const state: CodexWatchState = { model: 'gpt-5.6-luna' }
-    const record = processCodexLine(state, rawResponse('resp-cache-write', {
+    const record = processCodexLine(state, usageRecord('resp-cache-write', {
       input_tokens: 100,
       cached_input_tokens: 20,
       cache_write_input_tokens: 30,

@@ -26,8 +26,7 @@ export type CodexWatchState = {
   projectPath?: string
   previous?: TokenUsage
   lastSignature?: string
-  sawRawResponse?: boolean
-  rawResponseIds?: Set<string>
+  usageRecordIds?: Set<string>
 }
 
 export type CodexUsageRecord = {
@@ -44,9 +43,10 @@ export type CodexUsageRecord = {
   totalTokens?: number
   costUsd: number | null
   credits: number | null
-  usageSource?: 'raw_response_completed' | 'token_count_estimate'
+  usageSource?: 'token_usage_record'
   usageUnknown?: boolean
   responseId?: string
+  reportedAmount?: string
   accountId?: string
   accountEmail?: string
   eventId?: string
@@ -214,14 +214,13 @@ export function processCodexLine(
     return null
   }
 
-  if (entry['type'] === 'event_msg' && payload['type'] === 'raw_response_completed') {
-    state.sawRawResponse = true
+  if (entry['type'] === 'token_usage_record') {
     const responseId = stringValue(payload['response_id'])
-    const usage = payload['token_usage'] as TokenUsage | undefined
+    const usage = payload['usage'] as TokenUsage | undefined
     if (responseId) {
-      state.rawResponseIds ??= new Set<string>()
-      if (state.rawResponseIds.has(responseId)) return null
-      state.rawResponseIds.add(responseId)
+      state.usageRecordIds ??= new Set<string>()
+      if (state.usageRecordIds.has(responseId)) return null
+      state.usageRecordIds.add(responseId)
     }
 
     const inputTokens = usage ? numberValue(usage.input_tokens) : 0
@@ -230,7 +229,12 @@ export function processCodexLine(
     const outputTokens = usage ? numberValue(usage.output_tokens) : 0
     const reasoningTokens = usage ? numberValue(usage.reasoning_output_tokens) : 0
     const normalizedInput = Math.max(0, inputTokens - cachedInputTokens)
-    const billingModel = resolvedModel(state)
+    const billingModel = modelFromPayload(payload) ?? resolvedModel(state)
+    const accountId = stringValue(payload['account_id']) ?? state.accountId
+    const accountEmail = accountId
+      ? state.accountEmails?.[accountId]
+        ?? (accountId === state.accountId ? state.accountEmail : undefined)
+      : undefined
     const creditRate = codexCreditRate(billingModel)
     const creditTokens = {
       inputTokens: normalizedInput,
@@ -255,7 +259,7 @@ export function processCodexLine(
           : null
       : null
     const eventId = responseId
-      ? `codex:raw:${responseId}`
+      ? `codex:usage:${responseId}`
       : createHash('sha256').update(JSON.stringify([
         source, entry['timestamp'] ?? '', inputTokens, cachedInputTokens,
         cacheWriteTokens, outputTokens, reasoningTokens,
@@ -279,19 +283,21 @@ export function processCodexLine(
       credits: usage && creditRate && (cacheWriteTokens === 0 || creditRate.cacheWrite !== null)
         ? codexCredits(billingModel, creditTokens)
         : null,
-      usageSource: 'raw_response_completed',
+      usageSource: 'token_usage_record',
       usageUnknown: !usage,
       responseId,
-      accountId: state.accountId,
-      accountEmail: state.accountEmail,
+      reportedAmount: stringValue(
+        (payload['usage_metadata'] as Record<string, unknown> | undefined)?.['amount'],
+      ),
+      accountId,
+      accountEmail,
       eventId,
       source,
     }
   }
 
-  // TokenCountEvent is cumulative context telemetry, not an exact billing
-  // record. Only RawResponseCompleted carries one upstream completion's
-  // authoritative token usage.
+  // TokenCountEvent and the cumulative fields on TokenUsageRecord are not
+  // per-response billing records. Only TokenUsageRecord.usage is billable here.
   return null
 }
 
@@ -467,12 +473,11 @@ function primeLine(state: CodexWatchState, line: string): void {
   // Prefix priming is only for session identity and deduplication. Model
   // selection is deliberately owned by the reverse scan from EOF.
   updateStateFromPayload(state, stringValue(entry['type']), payload, false)
-  if (payload['type'] === 'raw_response_completed') {
-    state.sawRawResponse = true
+  if (entry['type'] === 'token_usage_record') {
     const responseId = stringValue(payload['response_id'])
     if (responseId) {
-      state.rawResponseIds ??= new Set<string>()
-      state.rawResponseIds.add(responseId)
+      state.usageRecordIds ??= new Set<string>()
+      state.usageRecordIds.add(responseId)
     }
   }
 }
@@ -606,6 +611,7 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
             reasoning_output_tokens: record.reasoningTokens,
             model: record.model,
             credits: record.credits,
+            ...(record.reportedAmount !== undefined ? { reported_amount: record.reportedAmount } : {}),
             session_id: record.sessionId,
             source: record.source,
             usage_source: record.usageSource,
