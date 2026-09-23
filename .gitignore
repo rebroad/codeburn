@@ -3,6 +3,8 @@
 # One did exactly that in db018f7 and had to be removed again in c642787.
 node_modules
 dist/
+# Local npm prefix used by the linked build-tree CLI install.
+/lib/
 *.tgz
 
 # OS

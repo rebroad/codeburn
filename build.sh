@@ -18,6 +18,6 @@ command -v cpto >/dev/null 2>&1 || { echo 'build.sh: missing required command: c
 command -v npm >/dev/null 2>&1 || { echo 'build.sh: missing required command: npm' >&2; exit 1; }
 
 SOURCE_COMMIT="$(git -C "${SOURCE_DIR}" rev-parse HEAD)"
-cpto --nogit --update-existing "${SOURCE_DIR}" "${BUILD_DIR}"
+cpto --nogit "${SOURCE_DIR}" "${BUILD_DIR}"
 CODEBURN_COMMIT="${SOURCE_COMMIT}" npm --prefix "${BUILD_DIR}" run build:cli
 node "${BUILD_DIR}/dist/cli.js" --version
