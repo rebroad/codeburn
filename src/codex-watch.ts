@@ -236,7 +236,7 @@ export function processCodexLine(
     const observedModel = modelFromPayload(payload) ?? state.model
     const billingModel = resolveBillingModel(observedModel, state)
     const displayModel = observedModel?.toLowerCase() === 'codex-auto-review'
-      ? observedModel
+      ? 'auto-review'
       : billingModel
     const accountId = stringValue(payload['account_id'])
       ?? (state.accountUpdateSeen ? state.accountId : state.fallbackAccountId)
