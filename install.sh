@@ -27,6 +27,18 @@ install_bin="$install_prefix/bin"
 package_dir="$(mktemp -d "${TMPDIR:-/tmp}/codeburn-install.XXXXXX")"
 trap 'rm -rf "$package_dir"' EXIT
 
+if [[ -z "${CODEBURN_COMMIT:-}" ]]; then
+  if ! CODEBURN_COMMIT="$(git rev-parse HEAD 2>/dev/null)"; then
+    printf 'Cannot determine the CodeBurn source commit. Run this installer from a Git checkout or set CODEBURN_COMMIT.\n' >&2
+    exit 1
+  fi
+fi
+if [[ ! "$CODEBURN_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
+  printf 'CODEBURN_COMMIT must be a full 40-character Git SHA.\n' >&2
+  exit 1
+fi
+export CODEBURN_COMMIT
+
 printf 'Installing dependencies...\n'
 npm ci --ignore-scripts
 
