@@ -230,7 +230,11 @@ export function processCodexLine(
     const outputTokens = usage ? numberValue(usage.output_tokens) : 0
     const reasoningTokens = usage ? numberValue(usage.reasoning_output_tokens) : 0
     const normalizedInput = Math.max(0, inputTokens - cachedInputTokens)
-    const billingModel = resolveBillingModel(modelFromPayload(payload) ?? state.model, state)
+    const observedModel = modelFromPayload(payload) ?? state.model
+    const billingModel = resolveBillingModel(observedModel, state)
+    const displayModel = observedModel?.toLowerCase() === 'codex-auto-review'
+      ? observedModel
+      : billingModel
     const accountId = stringValue(payload['account_id']) ?? state.accountId
     const accountEmail = accountId
       ? state.accountEmails?.[accountId]
@@ -271,7 +275,7 @@ export function processCodexLine(
       timestamp: stringValue(entry['timestamp']) ?? new Date().toISOString(),
       sessionId: state.sessionId ?? null,
       projectPath: state.projectPath ?? null,
-      model: billingModel,
+      model: displayModel,
       inputTokens: normalizedInput,
       cachedInputTokens,
       cacheWriteTokens,

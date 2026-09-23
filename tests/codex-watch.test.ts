@@ -287,7 +287,7 @@ describe('Codex live usage processing', () => {
     const record = processCodexLine(state, usageRecord('resp-unpriced', {
       input_tokens: 100, output_tokens: 40, total_tokens: 140,
     }), '/rollout.jsonl')
-    expect(record).toMatchObject({ model: 'gpt-6-luna', costUsd: expect.any(Number) })
+    expect(record).toMatchObject({ model: 'codex-auto-review', costUsd: expect.any(Number) })
     expect(record?.costUsd).toBeCloseTo(0.00003, 8)
     expect(record?.credits).toBeCloseTo(0.00075, 8)
   })
@@ -300,7 +300,7 @@ describe('Codex live usage processing', () => {
     const record = processCodexLine(state, usageRecord('resp-alias', {
       input_tokens: 100, output_tokens: 40, total_tokens: 140,
     }), '/rollout.jsonl')
-    expect(record).toMatchObject({ model: 'gpt-5.6-luna', costUsd: expect.any(Number) })
+    expect(record).toMatchObject({ model: 'codex-auto-review', costUsd: expect.any(Number) })
     expect(record?.credits).toBeCloseTo(0.0017, 8)
   })
 
