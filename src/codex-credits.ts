@@ -136,19 +136,10 @@ export async function refreshCodexPricing(): Promise<void> {
   }
 }
 
-// Activity surfaces keep their product id on the call (display stays
-// "Codex Auto Review"). Credits must follow the same underlying model
-// BUILTIN_ALIASES uses for USD. Keep this table in lockstep with
-// `codex-auto-review` in src/models.ts.
-const ACTIVITY_CREDIT_MODELS: Record<string, string> = {
-  'codex-auto-review': 'gpt-5.5',
-}
-
 /// Resolve the credit rate for a Codex model name, tolerating suffix variants
 /// (e.g. "gpt-5.5-codex"). Returns null when the model has no known credit rate.
 export function codexCreditRate(model: string): CodexCreditRate | null {
-  const mapped = ACTIVITY_CREDIT_MODELS[model] ?? ACTIVITY_CREDIT_MODELS[model.toLowerCase()]
-  const m = ((mapped ?? model).toLowerCase()).replace(/-codex$/, '')
+  const m = model.toLowerCase().replace(/-codex$/, '')
   if (CREDITS_PER_MILLION[m]) return CREDITS_PER_MILLION[m]!
   // Match the version only at a token boundary (start/'-' before, '-'/end
   // after) so a bare `includes('5.4')` can't catch a substring. The tokens

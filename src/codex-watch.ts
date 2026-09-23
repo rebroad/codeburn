@@ -243,8 +243,13 @@ export function processCodexLine(
       outputTokens,
       reasoningTokens,
     }
+    const unresolvedCatalogSlug = billingModel === 'codex-auto-review'
+      && !modelFromPayload(payload)
+      && !state.modelAliases?.[billingModel]
     const costUsd = usage
-      ? creditRate && (cacheWriteTokens === 0 || creditRate.cacheWrite !== null)
+      ? unresolvedCatalogSlug
+        ? null
+        : creditRate && (cacheWriteTokens === 0 || creditRate.cacheWrite !== null)
         ? codexCostUsd(billingModel, creditTokens)
         : creditRate
           ? null
@@ -280,7 +285,7 @@ export function processCodexLine(
       costUsd,
       // This is reconstructed consumption from the exact token usage and the
       // published per-model credit rate, not the account's balance.
-      credits: usage && creditRate && (cacheWriteTokens === 0 || creditRate.cacheWrite !== null)
+      credits: usage && !unresolvedCatalogSlug && creditRate && (cacheWriteTokens === 0 || creditRate.cacheWrite !== null)
         ? codexCredits(billingModel, creditTokens)
         : null,
       usageSource: 'token_usage_record',

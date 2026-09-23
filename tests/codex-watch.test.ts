@@ -38,6 +38,7 @@ function usageRecord(
   responseId: string,
   usage?: Record<string, number>,
   effectiveModel?: string,
+  sessionId: string | null = 'session-1',
 ): string {
   return JSON.stringify({
     type: 'token_usage_record',
@@ -45,7 +46,7 @@ function usageRecord(
     payload: {
       thread_id: 'thread-1',
       turn_id: 'turn-1',
-      session_id: 'session-1',
+      ...(sessionId ? { session_id: sessionId } : {}),
       root_turn_id: 'turn-1',
       account_id: 'account-one',
       response_id: responseId,
@@ -201,7 +202,7 @@ describe('Codex live usage processing', () => {
       type: 'turn_context',
       payload: { model: 'gpt-5.6-luna', cwd: '/work/project', session_id: 'session-2' },
     }), '/rollout.jsonl')
-    const record = processCodexLine(state, rawResponse('resp-model', {
+    const record = processCodexLine(state, usageRecord('resp-model', {
       input_tokens: 10, output_tokens: 5, total_tokens: 15,
     }), '/rollout.jsonl')
     expect(record?.model).toBe('gpt-5.6-luna')
@@ -213,7 +214,7 @@ describe('Codex live usage processing', () => {
       type: 'turn_context',
       payload: { model: 'gpt-5.4' },
     }), '/rollout.jsonl')
-    const first = processCodexLine(state, rawResponse('resp-old', {
+    const first = processCodexLine(state, usageRecord('resp-old', {
       input_tokens: 100, output_tokens: 20, total_tokens: 120,
     }), '/rollout.jsonl')
 
@@ -221,7 +222,7 @@ describe('Codex live usage processing', () => {
       type: 'turn_context',
       payload: { model: 'gpt-5.6-luna' },
     }), '/rollout.jsonl')
-    const second = processCodexLine(state, rawResponse('resp-new', {
+    const second = processCodexLine(state, usageRecord('resp-new', {
       input_tokens: 100, output_tokens: 20, total_tokens: 120,
     }), '/rollout.jsonl')
 
@@ -239,7 +240,7 @@ describe('Codex live usage processing', () => {
       },
     }), '/rollout.jsonl')
 
-    const record = processCodexLine(state, rawResponse('resp-settings-model', {
+    const record = processCodexLine(state, usageRecord('resp-settings-model', {
       input_tokens: 100, output_tokens: 20, total_tokens: 120,
     }), '/rollout.jsonl')
 
@@ -257,7 +258,7 @@ describe('Codex live usage processing', () => {
       payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 1 } } },
     }), '/rollout.jsonl')
 
-    const record = processCodexLine(state, rawResponse('resp-latest-model', {
+    const record = processCodexLine(state, usageRecord('resp-latest-model', {
       input_tokens: 100, output_tokens: 20, total_tokens: 120,
     }), '/rollout.jsonl')
 
@@ -270,9 +271,9 @@ describe('Codex live usage processing', () => {
       type: 'session_meta',
       payload: { id: 'session-from-metadata', cwd: '/work/project', model: 'gpt-5.6-luna' },
     }), '/rollout.jsonl')
-    const record = processCodexLine(state, rawResponse('resp-session-id', {
+    const record = processCodexLine(state, usageRecord('resp-session-id', {
       input_tokens: 100, output_tokens: 20, total_tokens: 120,
-    }), '/rollout.jsonl')
+    }, undefined, null), '/rollout.jsonl')
 
     expect(record?.sessionId).toBe('session-from-metadata')
   })
@@ -283,7 +284,7 @@ describe('Codex live usage processing', () => {
       type: 'turn_context',
       payload: { model: 'codex-auto-review' },
     }), '/rollout.jsonl')
-    const record = processCodexLine(state, rawResponse('resp-unpriced', {
+    const record = processCodexLine(state, usageRecord('resp-unpriced', {
       input_tokens: 100, output_tokens: 40, total_tokens: 140,
     }), '/rollout.jsonl')
     expect(record?.costUsd).toBeNull()
@@ -295,7 +296,7 @@ describe('Codex live usage processing', () => {
       model: 'codex-auto-review',
       modelAliases: { 'codex-auto-review': 'gpt-5.6-luna' },
     }
-    const record = processCodexLine(state, rawResponse('resp-alias', {
+    const record = processCodexLine(state, usageRecord('resp-alias', {
       input_tokens: 100, output_tokens: 40, total_tokens: 140,
     }), '/rollout.jsonl')
     expect(record).toMatchObject({ model: 'gpt-5.6-luna', costUsd: expect.any(Number) })
@@ -304,7 +305,7 @@ describe('Codex live usage processing', () => {
 
   it('does not assume a model when the rollout omits model metadata', () => {
     const state: CodexWatchState = {}
-    const record = processCodexLine(state, rawResponse('resp-no-model', {
+    const record = processCodexLine(state, usageRecord('resp-no-model', {
       input_tokens: 100, output_tokens: 40, total_tokens: 140,
     }), '/rollout.jsonl')
     expect(record).toMatchObject({ model: 'unknown', costUsd: null, credits: null })
