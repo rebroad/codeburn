@@ -28,21 +28,14 @@ There is no separate build step required to run the dev CLI. `npm run dev` runs 
 | `npm run test:locks` | Runs the four parallelism-sensitive `cache-refresh-lock` suites serially. |
 | `npm run test:watch` | Same scope as `npm test`, in watch mode. |
 | `npm run dev -- status` | Runs the CLI in dev mode against your real data. |
-| `npm run build:cli` | Rebuilds the CLI into `dist/` without building the dashboard. |
+| `./build.sh` | Syncs the source to the sibling build tree, rebuilds the CLI, and prints its version. |
 | `npm run build` | Builds the CLI and dashboard from the checked-in pricing catalogs without mutating tracked source files. |
 | `npm run bundle-litellm` | Explicitly refreshes the checked-in pricing catalogs from their upstream sources. Review and commit the resulting data changes separately. |
 
-The CLI embeds the full Git commit in its version output. A normal build from
-the source checkout gets this from `git`. When building in a separate build
-tree, pass the source checkout's SHA explicitly so the output does not use the
-build tree's potentially detached or stale `HEAD`:
-
-```bash
-CODEBURN_COMMIT="$(git -C /path/to/codeburn rev-parse HEAD)" npm run build:cli
-```
-
-The build fails if it cannot determine a full commit SHA; it never silently
-produces a CLI reporting `unknown`.
+The CLI embeds the source checkout's full Git commit in its version output.
+Run `./build.sh` with no arguments; it handles the source-to-build sync and
+commit stamp automatically. The build fails rather than silently producing a
+CLI reporting `unknown`.
 
 To test a specific suite, run vitest directly with a path:
 
