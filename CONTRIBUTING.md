@@ -28,6 +28,7 @@ There is no separate build step required to run the dev CLI. `npm run dev` runs 
 | `npm run test:locks` | Runs the four parallelism-sensitive `cache-refresh-lock` suites serially. |
 | `npm run test:watch` | Same scope as `npm test`, in watch mode. |
 | `npm run dev -- status` | Runs the CLI in dev mode against your real data. |
+| `npm run build:cli` | Rebuilds the CLI into `dist/` without building the dashboard. |
 | `npm run build` | Builds the CLI and dashboard from the checked-in pricing catalogs without mutating tracked source files. |
 | `npm run bundle-litellm` | Explicitly refreshes the checked-in pricing catalogs from their upstream sources. Review and commit the resulting data changes separately. |
 
