@@ -100,8 +100,38 @@ export function formatCodexRateLimitRecord(record: CodexRateLimitRecord, format:
       windows: Object.fromEntries(windows.map(([window, duration]) => [duration, window])),
     })
   }
-  const rendered = windows.map(([window, duration]) => `${duration} ${window.usedPercent}%`).join(', ')
-  return `Codex quota ${record.timestamp} session=${record.sessionId ?? '-'} ordinal=${record.ordinal ?? '-'}: ${rendered} account=${record.accountEmail ?? record.accountId ?? '-'} source=${record.source}`
+  const usage = `usage: ${windows.map(([window, duration]) => `${duration} = ${window.usedPercent}%`).join(' ')}`
+  const template = format === 'human' ? DEFAULT_HUMAN_FORMAT : format.replace(/^\+/, '')
+  const values: Record<string, string> = {
+    t: record.timestamp,
+    s: record.sessionId ?? '-',
+    a: record.accountEmail ?? record.accountId ?? '-',
+  }
+  const parts = template.split(/([\t\n\r ,]+)/)
+  let output = ''
+  let separator = ''
+  let insertedUsage = false
+  for (const part of parts) {
+    if (/^[\t\n\r ,]+$/.test(part)) {
+      separator = part
+      continue
+    }
+    if (!part) continue
+
+    const fields = [...part.matchAll(/%([%tlmspicowrdCaf])/g)].map((match) => match[1]!)
+    const hasNonOrdinalField = fields.some((field) => field !== '%' && field !== 't' && field !== 's' && field !== 'a')
+    if (hasNonOrdinalField) {
+      if (insertedUsage) continue
+      output += `${output ? separator : ''}${usage}`
+      insertedUsage = true
+      continue
+    }
+
+    const rendered = part.replace(/%([%tlmspicowrdCaf])/g, (_match, key: string) => key === '%' ? '%' : values[key] ?? _match)
+    output += `${output ? separator : ''}${rendered}`
+  }
+  if (!insertedUsage) output = output ? `${output} ${usage}` : usage
+  return output
 }
 
 export type CodexWatchFileState = {
@@ -425,7 +455,7 @@ export function processCodexRateLimitLine(
   }
 }
 
-const DEFAULT_HUMAN_FORMAT = '%t %m account=%a input=%i cached=%c cache_write=%w output=%o reasoning=%r cost=$%d credits=%C'
+const DEFAULT_HUMAN_FORMAT = '%t %m %s account=%a input=%i cached=%c cache_write=%w output=%o reasoning=%r cost=$%d credits=%C'
 
 export const CODEX_WATCH_FORMAT_HELP = `
 Watch output formats:
@@ -448,6 +478,10 @@ Watch output formats:
   <format>
     A custom date-style token format, for example:
       +%t %m account=%a input=%i output=%o cost=$%d
+
+For quota updates, %t, %s, and %a keep their formatted values. The first
+other format field is replaced by the quota usage, and later non-ordinal fields
+and their labels are omitted.
 
 The account value is the email associated with the backend account used by the
 model request; it is the stable account ID when no email mapping is available.

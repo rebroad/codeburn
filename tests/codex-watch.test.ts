@@ -109,7 +109,13 @@ describe('Codex live usage processing', () => {
       primary: { usedPercent: 10, resetAt: 1_800_000_000, windowMinutes: 300 },
       secondary: { usedPercent: 25, resetAt: 1_800_100_000, windowMinutes: 10080 },
     })
-    expect(formatCodexRateLimitRecord(first!, 'human')).toContain('Codex quota 2026-08-04T12:00:01.000Z session=session-1 ordinal=21: 5h 10%, weekly 25%')
+    expect(formatCodexRateLimitRecord(first!, 'human')).toBe('2026-08-04T12:00:01.000Z usage: 5h = 10% weekly = 25% session-1 account=one@example.test')
+    expect(formatCodexRateLimitRecord(first!, '%t $%d i=%i ci=%c o=%o co=%w r=%r %m %s %a')).toBe(
+      '2026-08-04T12:00:01.000Z usage: 5h = 10% weekly = 25% session-1 one@example.test',
+    )
+    expect(formatCodexRateLimitRecord(first!, '%t\t$%d, i=%i, ci=%c, %s, %a')).toBe(
+      '2026-08-04T12:00:01.000Z\tusage: 5h = 10% weekly = 25%, session-1, one@example.test',
+    )
     const json = JSON.parse(formatCodexRateLimitRecord(first!, 'json')) as Record<string, unknown>
     expect(json['windows']).toMatchObject({ '5h': { usedPercent: 10 }, weekly: { usedPercent: 25 } })
     expect(json).toMatchObject({ timestamp: '2026-08-04T12:00:01.000Z', ordinal: 21, sessionId: 'session-1', source: '/rollout.jsonl' })
