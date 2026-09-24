@@ -101,7 +101,9 @@ export function formatCodexRateLimitRecord(record: CodexRateLimitRecord, format:
     })
   }
   const usage = `usage: ${windows.map(([window, duration]) => `${duration} = ${window.usedPercent}%`).join(' ')}`
-  const template = format === 'human' ? DEFAULT_HUMAN_FORMAT : format.replace(/^\+/, '')
+  const template = format === 'human'
+    ? DEFAULT_HUMAN_FORMAT.replace(' account=%a', ' %s account=%a')
+    : format.replace(/^\+/, '')
   const values: Record<string, string> = {
     t: record.timestamp,
     s: record.sessionId ?? '-',
@@ -455,7 +457,7 @@ export function processCodexRateLimitLine(
   }
 }
 
-const DEFAULT_HUMAN_FORMAT = '%t %m %s account=%a input=%i cached=%c cache_write=%w output=%o reasoning=%r cost=$%d credits=%C'
+const DEFAULT_HUMAN_FORMAT = '%t %m account=%a input=%i cached=%c cache_write=%w output=%o reasoning=%r cost=$%d credits=%C'
 
 export const CODEX_WATCH_FORMAT_HELP = `
 Watch output formats:
