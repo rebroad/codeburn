@@ -7,6 +7,7 @@ import {
   codexRateLimitDurationLabel,
   formatCodexRateLimitRecord,
   formatCodexUsageRecord,
+  codexRateLimitOutputSignature,
   loadCodexAccountInfo,
   processCodexLine,
   processCodexRateLimitLine,
@@ -131,6 +132,12 @@ describe('Codex live usage processing', () => {
     const right = { ...state, lastRateLimitSignature: undefined }
     expect(processCodexRateLimitLine(left, quotaLine(30), '/left.jsonl', globalState)).not.toBeNull()
     expect(processCodexRateLimitLine(right, quotaLine(30), '/right.jsonl', globalState)).toBeNull()
+
+    const pairedSession = { ...first!, timestamp: '2026-08-04T12:00:02.000Z', sessionId: 'session-2', ordinal: 22,
+      primary: { ...first!.primary!, resetAt: 1_800_000_001 }, secondary: { ...first!.secondary!, resetAt: 1_800_100_001 } }
+    expect(codexRateLimitOutputSignature(pairedSession)).toBe(codexRateLimitOutputSignature(first!))
+    expect(codexRateLimitOutputSignature({ ...pairedSession, secondary: { ...pairedSession.secondary!, usedPercent: 26 } }))
+      .not.toBe(codexRateLimitOutputSignature(first!))
 
     const jitterState = new Map<string, string>()
     const jitterAccount: CodexWatchState = { accountId: 'jitter-account', accountUpdateSeen: true }

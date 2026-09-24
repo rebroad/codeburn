@@ -77,6 +77,15 @@ export type CodexRateLimitRecord = {
   eventId: string
 }
 
+export function codexRateLimitOutputSignature(record: CodexRateLimitRecord): string {
+  return JSON.stringify([
+    record.accountId,
+    record.limitId,
+    record.primary && [record.primary.windowMinutes, record.primary.usedPercent],
+    record.secondary && [record.secondary.windowMinutes, record.secondary.usedPercent],
+  ])
+}
+
 export function codexRateLimitDurationLabel(minutes?: number): string {
   if (minutes === undefined) return 'limit'
   for (const [expected, label] of [
@@ -713,6 +722,7 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
   const modelAliases = await loadCodexModelAliases()
   const accountInfo = await loadCodexAccountInfo()
   const seenRateLimits = new Map<string, string>()
+  const lastRateLimitOutput = new Map<string, string>()
 
   const files = new Map<string, CodexWatchFileState>()
   const registerNewFiles = async (): Promise<void> => {
@@ -835,6 +845,10 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
             last_backend_secondary_window_minutes: rateLimit.secondary?.windowMinutes,
           }) + '\n', 'utf8')
         }
+        const outputSignature = codexRateLimitOutputSignature(rateLimit)
+        const outputKey = JSON.stringify([rateLimit.accountId, rateLimit.limitId])
+        if (lastRateLimitOutput.get(outputKey) === outputSignature) return
+        lastRateLimitOutput.set(outputKey, outputSignature)
         const serialized = formatCodexRateLimitRecord(rateLimit, format) + '\n'
         if (outputPath) await appendFile(outputPath, serialized, 'utf8')
         else process.stdout.write(serialized)
