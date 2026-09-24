@@ -101,9 +101,7 @@ export function formatCodexRateLimitRecord(record: CodexRateLimitRecord, format:
     })
   }
   const usage = `usage: ${windows.map(([window, duration]) => `${duration} = ${window.usedPercent}%`).join(' ')}`
-  const template = format === 'human'
-    ? DEFAULT_HUMAN_FORMAT.replace(' account=%a', ' %s account=%a')
-    : format.replace(/^\+/, '')
+  const template = format === 'human' ? DEFAULT_HUMAN_FORMAT : format.replace(/^\+/, '')
   const values: Record<string, string> = {
     t: record.timestamp,
     s: record.sessionId ?? '-',
