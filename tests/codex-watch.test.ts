@@ -105,6 +105,12 @@ describe('Codex live usage processing', () => {
     })
     expect(processCodexRateLimitLine(state, quotaLine(25), '/rollout.jsonl')).toBeNull()
     expect(processCodexRateLimitLine(state, quotaLine(26), '/rollout.jsonl')?.usedPercent).toBe(26)
+
+    const globalState = new Map<string, string>()
+    const left = { ...state, lastRateLimitSignature: undefined }
+    const right = { ...state, lastRateLimitSignature: undefined }
+    expect(processCodexRateLimitLine(left, quotaLine(30), '/left.jsonl', globalState)).not.toBeNull()
+    expect(processCodexRateLimitLine(right, quotaLine(30), '/right.jsonl', globalState)).toBeNull()
   })
 
   it('uses auth fallback only when the rollout has no account signal', () => {

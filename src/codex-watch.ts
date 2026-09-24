@@ -329,6 +329,7 @@ export function processCodexRateLimitLine(
   state: CodexWatchState,
   line: string,
   source: string,
+  seenRateLimits?: Map<string, string>,
 ): CodexRateLimitRecord | null {
   let entry: Record<string, unknown>
   try {
@@ -354,8 +355,14 @@ export function processCodexRateLimitLine(
   const resetAt = typeof window['resets_at'] === 'number' ? window['resets_at'] : undefined
   const windowMinutes = typeof window['window_minutes'] === 'number' ? window['window_minutes'] : undefined
   const signature = JSON.stringify([accountId, limitId, limitName, window['used_percent'], resetAt, windowMinutes])
-  if (state.lastRateLimitSignature === signature) return null
-  state.lastRateLimitSignature = signature
+  const key = JSON.stringify([accountId, limitId, windowMinutes])
+  if (seenRateLimits) {
+    if (seenRateLimits.get(key) === signature) return null
+    seenRateLimits.set(key, signature)
+  } else {
+    if (state.lastRateLimitSignature === signature) return null
+    state.lastRateLimitSignature = signature
+  }
 
   const timestamp = stringValue(entry['timestamp']) ?? new Date().toISOString()
   const eventId = createHash('sha256').update(`codex-rate-limit\0${signature}\0${timestamp}`).digest('hex')
@@ -617,6 +624,7 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
   await refreshCodexPricing()
   const modelAliases = await loadCodexModelAliases()
   const accountInfo = await loadCodexAccountInfo()
+  const seenRateLimits = new Map<string, string>()
 
   const files = new Map<string, CodexWatchFileState>()
   const registerNewFiles = async (): Promise<void> => {
@@ -708,7 +716,7 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
           else process.stdout.write(serialized)
         }
 
-        const rateLimit = processCodexRateLimitLine(state.usage, line, path)
+        const rateLimit = processCodexRateLimitLine(state.usage, line, path, seenRateLimits)
         if (!rateLimit) return
         if (ledgerPath) {
           await appendFile(ledgerPath, JSON.stringify({
