@@ -122,6 +122,12 @@ describe('Codex live usage processing', () => {
     const right = { ...state, lastRateLimitSignature: undefined }
     expect(processCodexRateLimitLine(left, quotaLine(30), '/left.jsonl', globalState)).not.toBeNull()
     expect(processCodexRateLimitLine(right, quotaLine(30), '/right.jsonl', globalState)).toBeNull()
+
+    const jitterState = new Map<string, string>()
+    const jitterAccount: CodexWatchState = { accountId: 'jitter-account', accountUpdateSeen: true }
+    expect(processCodexRateLimitLine(jitterAccount, quotaLine(25, 51), '/jitter.jsonl', jitterState)?.primary?.usedPercent).toBe(51)
+    expect(processCodexRateLimitLine(jitterAccount, quotaLine(25, 50), '/jitter.jsonl', jitterState)).toBeNull()
+    expect(processCodexRateLimitLine(jitterAccount, quotaLine(25, 49), '/jitter.jsonl', jitterState)?.primary?.usedPercent).toBe(49)
   })
 
   it('uses auth fallback only when the rollout has no account signal', () => {

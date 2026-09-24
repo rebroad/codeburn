@@ -381,19 +381,35 @@ export function processCodexRateLimitLine(
       windowMinutes: typeof window['window_minutes'] === 'number' ? window['window_minutes'] : undefined,
     }
   }
-  const primary = readWindow(snapshot['primary'])
+  let primary = readWindow(snapshot['primary'])
   const secondary = readWindow(snapshot['secondary'])
   if (!primary && !secondary) return null
 
   const accountId = state.accountUpdateSeen ? state.accountId : state.fallbackAccountId
   const accountEmail = accountId ? state.accountEmails?.[accountId] : undefined
-  const signature = JSON.stringify([accountId, limitId, limitName, primary, secondary])
   const key = JSON.stringify([accountId, limitId])
+  const previousSignature = seenRateLimits?.get(key) ?? state.lastRateLimitSignature
+  if (previousSignature && primary) {
+    try {
+      const previous = JSON.parse(previousSignature) as [unknown, unknown, unknown, CodexRateLimitRecord['primary'], CodexRateLimitRecord['secondary']]
+      const previousPrimary = previous[3]
+      if (previousPrimary
+        && previousPrimary.windowMinutes === primary.windowMinutes
+        && previousPrimary.resetAt === primary.resetAt
+        && primary.usedPercent < previousPrimary.usedPercent
+        && previousPrimary.usedPercent - primary.usedPercent <= 1) {
+        primary = previousPrimary
+      }
+    } catch {
+      // Ignore malformed prior state and treat this as a fresh quota snapshot.
+    }
+  }
+  const signature = JSON.stringify([accountId, limitId, limitName, primary, secondary])
   if (seenRateLimits) {
-    if (seenRateLimits.get(key) === signature) return null
+    if (previousSignature === signature) return null
     seenRateLimits.set(key, signature)
   } else {
-    if (state.lastRateLimitSignature === signature) return null
+    if (previousSignature === signature) return null
     state.lastRateLimitSignature = signature
   }
 
