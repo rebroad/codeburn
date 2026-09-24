@@ -4,6 +4,8 @@ import { join } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import { describe, expect, it } from 'vitest'
 import {
+  codexRateLimitDurationLabel,
+  formatCodexRateLimitRecord,
   formatCodexUsageRecord,
   loadCodexAccountInfo,
   processCodexLine,
@@ -105,6 +107,12 @@ describe('Codex live usage processing', () => {
       primary: { usedPercent: 10, resetAt: 1_800_000_000, windowMinutes: 300 },
       secondary: { usedPercent: 25, resetAt: 1_800_100_000, windowMinutes: 10080 },
     })
+    expect(formatCodexRateLimitRecord(first!, 'human')).toContain('5h 10%, weekly 25%')
+    const json = JSON.parse(formatCodexRateLimitRecord(first!, 'json')) as Record<string, unknown>
+    expect(json['windows']).toMatchObject({ '5h': { usedPercent: 10 }, weekly: { usedPercent: 25 } })
+    expect(json).not.toHaveProperty('primary')
+    expect(json).not.toHaveProperty('secondary')
+    expect(codexRateLimitDurationLabel(43200)).toBe('monthly')
     expect(processCodexRateLimitLine(state, quotaLine(25), '/rollout.jsonl')).toBeNull()
     expect(processCodexRateLimitLine(state, quotaLine(26), '/rollout.jsonl')?.secondary?.usedPercent).toBe(26)
     expect(processCodexRateLimitLine(state, quotaLine(26, 11), '/rollout.jsonl')?.primary?.usedPercent).toBe(11)

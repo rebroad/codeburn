@@ -75,6 +75,33 @@ export type CodexRateLimitRecord = {
   eventId: string
 }
 
+export function codexRateLimitDurationLabel(minutes?: number): string {
+  if (minutes === undefined) return 'limit'
+  for (const [expected, label] of [
+    [300, '5h'], [1440, 'daily'], [10080, 'weekly'], [43200, 'monthly'], [525600, 'annual'],
+  ] as const) {
+    if (minutes >= expected * 0.95 && minutes <= expected * 1.05) return label
+  }
+  if (minutes >= 60 && minutes % 60 === 0) return `${minutes / 60}h`
+  return `${minutes}m`
+}
+
+export function formatCodexRateLimitRecord(record: CodexRateLimitRecord, format: string): string {
+  const windows = [
+    ...(record.primary ? [[record.primary, codexRateLimitDurationLabel(record.primary.windowMinutes)] as const] : []),
+    ...(record.secondary ? [[record.secondary, codexRateLimitDurationLabel(record.secondary.windowMinutes)] as const] : []),
+  ]
+  if (format === 'json') {
+    const { primary: _primary, secondary: _secondary, ...metadata } = record
+    return JSON.stringify({
+      ...metadata,
+      windows: Object.fromEntries(windows.map(([window, duration]) => [duration, window])),
+    })
+  }
+  const rendered = windows.map(([window, duration]) => `${duration} ${window.usedPercent}%`).join(', ')
+  return `Codex quota: ${rendered} account=${record.accountEmail ?? record.accountId ?? '-'}`
+}
+
 export type CodexWatchFileState = {
   offset: number
   pending: string
@@ -386,7 +413,8 @@ Watch output formats:
 
   json
     Full JSON record, including rate_limit_snapshot updates when quota values
-    change. The backend account is available as accountEmail when known;
+    change. Rate-limit windows are keyed by duration (for example, 5h or
+    weekly). The backend account is available as accountEmail when known;
     accountId remains available for stable attribution.
 
   human
@@ -753,9 +781,7 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
             last_backend_secondary_window_minutes: rateLimit.secondary?.windowMinutes,
           }) + '\n', 'utf8')
         }
-        const serialized = format === 'json'
-          ? JSON.stringify(rateLimit) + '\n'
-          : `Codex quota: ${rateLimit.primary ? `primary ${rateLimit.primary.usedPercent}%` : ''}${rateLimit.primary && rateLimit.secondary ? ', ' : ''}${rateLimit.secondary ? `secondary ${rateLimit.secondary.usedPercent}%` : ''} account=${rateLimit.accountEmail ?? rateLimit.accountId ?? '-'}\n`
+        const serialized = formatCodexRateLimitRecord(rateLimit, format) + '\n'
         if (outputPath) await appendFile(outputPath, serialized, 'utf8')
         else process.stdout.write(serialized)
     })
