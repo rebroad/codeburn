@@ -29,6 +29,7 @@ export type CodexWatchState = {
   previous?: TokenUsage
   lastSignature?: string
   usageRecordIds?: Set<string>
+  lastRateLimitSignature?: string
 }
 
 export type CodexUsageRecord = {
@@ -59,6 +60,20 @@ export type CodexWatchOptions = {
   outputPath?: string
   format?: string
   ledgerPath?: string
+}
+
+export type CodexRateLimitRecord = {
+  type: 'rate_limit_snapshot'
+  timestamp: string
+  accountId?: string
+  accountEmail?: string
+  limitId?: string
+  limitName?: string
+  usedPercent: number
+  resetAt?: number
+  windowMinutes?: number
+  source: string
+  eventId: string
 }
 
 export type CodexWatchFileState = {
@@ -310,13 +325,55 @@ export function processCodexLine(
   return null
 }
 
+export function processCodexRateLimitLine(
+  state: CodexWatchState,
+  line: string,
+  source: string,
+): CodexRateLimitRecord | null {
+  let entry: Record<string, unknown>
+  try {
+    entry = JSON.parse(line) as Record<string, unknown>
+  } catch {
+    return null
+  }
+  if (entry['type'] !== 'event_msg') return null
+  const payload = entry['payload'] as Record<string, unknown> | undefined
+  if (payload?.['type'] !== 'token_count') return null
+  const snapshot = payload['rate_limits'] as Record<string, unknown> | undefined
+  if (!snapshot) return null
+
+  const limitId = stringValue(snapshot['limit_id'])
+  const limitName = stringValue(snapshot['limit_name'])
+  const secondary = snapshot['secondary'] as Record<string, unknown> | undefined
+  const primary = snapshot['primary'] as Record<string, unknown> | undefined
+  const window = secondary ?? primary
+  if (!window || typeof window['used_percent'] !== 'number' || !Number.isFinite(window['used_percent'])) return null
+
+  const accountId = state.accountUpdateSeen ? state.accountId : state.fallbackAccountId
+  const accountEmail = accountId ? state.accountEmails?.[accountId] : undefined
+  const resetAt = typeof window['resets_at'] === 'number' ? window['resets_at'] : undefined
+  const windowMinutes = typeof window['window_minutes'] === 'number' ? window['window_minutes'] : undefined
+  const signature = JSON.stringify([accountId, limitId, limitName, window['used_percent'], resetAt, windowMinutes])
+  if (state.lastRateLimitSignature === signature) return null
+  state.lastRateLimitSignature = signature
+
+  const timestamp = stringValue(entry['timestamp']) ?? new Date().toISOString()
+  const eventId = createHash('sha256').update(`codex-rate-limit\0${signature}\0${timestamp}`).digest('hex')
+  return {
+    type: 'rate_limit_snapshot', timestamp, accountId, accountEmail,
+    limitId, limitName, usedPercent: window['used_percent'], resetAt, windowMinutes,
+    source, eventId,
+  }
+}
+
 const DEFAULT_HUMAN_FORMAT = '%t %m account=%a input=%i cached=%c cache_write=%w output=%o reasoning=%r cost=$%d credits=%C'
 
 export const CODEX_WATCH_FORMAT_HELP = `
 Watch output formats:
 
   json
-    Full JSON record. The backend account is available as accountEmail when known;
+    Full JSON record, including rate_limit_snapshot updates when quota values
+    change. The backend account is available as accountEmail when known;
     accountId remains available for stable attribution.
 
   human
@@ -616,9 +673,9 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
           // processCodexLine handles malformed records as ignored input.
         }
         const record = processCodexLine(state.usage, line, path)
-        if (!record) return
-        if (ledgerPath) {
-          await appendFile(ledgerPath, JSON.stringify({
+        if (record) {
+          if (ledgerPath) {
+            await appendFile(ledgerPath, JSON.stringify({
             event_id: record.eventId,
             ...(record.accountId ? { account_id: record.accountId } : {}),
             provider: 'openai',
@@ -644,9 +701,41 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
             usage_source: record.usageSource,
             usage_unknown: record.usageUnknown,
             response_id: record.responseId,
+            }) + '\n', 'utf8')
+          }
+          const serialized = formatCodexUsageRecord(record, format) + '\n'
+          if (outputPath) await appendFile(outputPath, serialized, 'utf8')
+          else process.stdout.write(serialized)
+        }
+
+        const rateLimit = processCodexRateLimitLine(state.usage, line, path)
+        if (!rateLimit) return
+        if (ledgerPath) {
+          await appendFile(ledgerPath, JSON.stringify({
+            event_id: rateLimit.eventId,
+            event_type: rateLimit.type,
+            ...(rateLimit.accountId ? { account_id: rateLimit.accountId } : {}),
+            provider: 'openai',
+            updated_at: Number.isFinite(Date.parse(rateLimit.timestamp))
+              ? Math.floor(Date.parse(rateLimit.timestamp) / 1000)
+              : Math.floor(Date.parse(new Date().toISOString()) / 1000),
+            total_usage_usd: 0,
+            total_usage_usd_with_prewarm: 0,
+            total_tokens: 0,
+            input_tokens: 0,
+            cached_input_tokens: 0,
+            output_tokens: 0,
+            reasoning_output_tokens: 0,
+            last_backend_limit_id: rateLimit.limitId,
+            last_backend_limit_name: rateLimit.limitName,
+            last_backend_used_percent: rateLimit.usedPercent,
+            last_backend_resets_at: rateLimit.resetAt,
+            last_backend_window_minutes: rateLimit.windowMinutes,
           }) + '\n', 'utf8')
         }
-        const serialized = formatCodexUsageRecord(record, format) + '\n'
+        const serialized = format === 'json'
+          ? JSON.stringify(rateLimit) + '\n'
+          : `Codex quota: ${rateLimit.usedPercent}% used${rateLimit.windowMinutes === undefined ? '' : ` in ${rateLimit.windowMinutes}m`}${rateLimit.resetAt === undefined ? '' : `; resets ${new Date(rateLimit.resetAt * 1000).toISOString()}`} account=${rateLimit.accountEmail ?? rateLimit.accountId ?? '-'}\n`
         if (outputPath) await appendFile(outputPath, serialized, 'utf8')
         else process.stdout.write(serialized)
     })

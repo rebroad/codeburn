@@ -7,6 +7,7 @@ import {
   formatCodexUsageRecord,
   loadCodexAccountInfo,
   processCodexLine,
+  processCodexRateLimitLine,
   readAppended,
   type CodexWatchFileState,
   type CodexWatchState,
@@ -82,6 +83,30 @@ function routedUsageRecord(responseId: string, model: string): string {
 }
 
 describe('Codex live usage processing', () => {
+  it('emits quota snapshots from token_count and only when the selected window changes', () => {
+    const state: CodexWatchState = {
+      accountId: 'account-one',
+      accountUpdateSeen: true,
+      accountEmails: { 'account-one': 'one@example.test' },
+    }
+    const quotaLine = (usedPercent: number) => JSON.stringify({
+      type: 'event_msg', timestamp: '2026-08-04T12:00:01.000Z',
+      payload: { type: 'token_count', rate_limits: {
+        limit_id: 'codex', limit_name: 'Codex',
+        primary: { used_percent: 10, window_minutes: 300, resets_at: 1_800_000_000 },
+        secondary: { used_percent: usedPercent, window_minutes: 10080, resets_at: 1_800_100_000 },
+      } },
+    })
+
+    const first = processCodexRateLimitLine(state, quotaLine(25), '/rollout.jsonl')
+    expect(first).toMatchObject({
+      type: 'rate_limit_snapshot', accountId: 'account-one', accountEmail: 'one@example.test',
+      limitId: 'codex', usedPercent: 25, resetAt: 1_800_100_000, windowMinutes: 10080,
+    })
+    expect(processCodexRateLimitLine(state, quotaLine(25), '/rollout.jsonl')).toBeNull()
+    expect(processCodexRateLimitLine(state, quotaLine(26), '/rollout.jsonl')?.usedPercent).toBe(26)
+  })
+
   it('uses auth fallback only when the rollout has no account signal', () => {
     const state: CodexWatchState = { fallbackAccountId: 'auth-account', accountEmails: { 'auth-account': 'auth@example.test' } }
     const inferred = processCodexLine(state, usageWithoutAccount('resp-inferred', { input_tokens: 100, output_tokens: 20 }), '/rollout.jsonl')
