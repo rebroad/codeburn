@@ -69,9 +69,8 @@ export type CodexRateLimitRecord = {
   accountEmail?: string
   limitId?: string
   limitName?: string
-  usedPercent: number
-  resetAt?: number
-  windowMinutes?: number
+  primary?: { usedPercent: number; resetAt?: number; windowMinutes?: number }
+  secondary?: { usedPercent: number; resetAt?: number; windowMinutes?: number }
   source: string
   eventId: string
 }
@@ -345,17 +344,24 @@ export function processCodexRateLimitLine(
 
   const limitId = stringValue(snapshot['limit_id'])
   const limitName = stringValue(snapshot['limit_name'])
-  const secondary = snapshot['secondary'] as Record<string, unknown> | undefined
-  const primary = snapshot['primary'] as Record<string, unknown> | undefined
-  const window = secondary ?? primary
-  if (!window || typeof window['used_percent'] !== 'number' || !Number.isFinite(window['used_percent'])) return null
+  const readWindow = (value: unknown): CodexRateLimitRecord['primary'] => {
+    if (!value || typeof value !== 'object') return undefined
+    const window = value as Record<string, unknown>
+    if (typeof window['used_percent'] !== 'number' || !Number.isFinite(window['used_percent'])) return undefined
+    return {
+      usedPercent: window['used_percent'],
+      resetAt: typeof window['resets_at'] === 'number' ? window['resets_at'] : undefined,
+      windowMinutes: typeof window['window_minutes'] === 'number' ? window['window_minutes'] : undefined,
+    }
+  }
+  const primary = readWindow(snapshot['primary'])
+  const secondary = readWindow(snapshot['secondary'])
+  if (!primary && !secondary) return null
 
   const accountId = state.accountUpdateSeen ? state.accountId : state.fallbackAccountId
   const accountEmail = accountId ? state.accountEmails?.[accountId] : undefined
-  const resetAt = typeof window['resets_at'] === 'number' ? window['resets_at'] : undefined
-  const windowMinutes = typeof window['window_minutes'] === 'number' ? window['window_minutes'] : undefined
-  const signature = JSON.stringify([accountId, limitId, limitName, window['used_percent'], resetAt, windowMinutes])
-  const key = JSON.stringify([accountId, limitId, windowMinutes])
+  const signature = JSON.stringify([accountId, limitId, limitName, primary, secondary])
+  const key = JSON.stringify([accountId, limitId])
   if (seenRateLimits) {
     if (seenRateLimits.get(key) === signature) return null
     seenRateLimits.set(key, signature)
@@ -368,7 +374,7 @@ export function processCodexRateLimitLine(
   const eventId = createHash('sha256').update(`codex-rate-limit\0${signature}\0${timestamp}`).digest('hex')
   return {
     type: 'rate_limit_snapshot', timestamp, accountId, accountEmail,
-    limitId, limitName, usedPercent: window['used_percent'], resetAt, windowMinutes,
+    limitId, limitName, primary, secondary,
     source, eventId,
   }
 }
@@ -736,14 +742,20 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
             reasoning_output_tokens: 0,
             last_backend_limit_id: rateLimit.limitId,
             last_backend_limit_name: rateLimit.limitName,
-            last_backend_used_percent: rateLimit.usedPercent,
-            last_backend_resets_at: rateLimit.resetAt,
-            last_backend_window_minutes: rateLimit.windowMinutes,
+            last_backend_used_percent: (rateLimit.secondary ?? rateLimit.primary)?.usedPercent,
+            last_backend_resets_at: (rateLimit.secondary ?? rateLimit.primary)?.resetAt,
+            last_backend_window_minutes: (rateLimit.secondary ?? rateLimit.primary)?.windowMinutes,
+            last_backend_primary_used_percent: rateLimit.primary?.usedPercent,
+            last_backend_primary_resets_at: rateLimit.primary?.resetAt,
+            last_backend_primary_window_minutes: rateLimit.primary?.windowMinutes,
+            last_backend_secondary_used_percent: rateLimit.secondary?.usedPercent,
+            last_backend_secondary_resets_at: rateLimit.secondary?.resetAt,
+            last_backend_secondary_window_minutes: rateLimit.secondary?.windowMinutes,
           }) + '\n', 'utf8')
         }
         const serialized = format === 'json'
           ? JSON.stringify(rateLimit) + '\n'
-          : `Codex quota: ${rateLimit.usedPercent}% used${rateLimit.windowMinutes === undefined ? '' : ` in ${rateLimit.windowMinutes}m`}${rateLimit.resetAt === undefined ? '' : `; resets ${new Date(rateLimit.resetAt * 1000).toISOString()}`} account=${rateLimit.accountEmail ?? rateLimit.accountId ?? '-'}\n`
+          : `Codex quota: ${rateLimit.primary ? `primary ${rateLimit.primary.usedPercent}%` : ''}${rateLimit.primary && rateLimit.secondary ? ', ' : ''}${rateLimit.secondary ? `secondary ${rateLimit.secondary.usedPercent}%` : ''} account=${rateLimit.accountEmail ?? rateLimit.accountId ?? '-'}\n`
         if (outputPath) await appendFile(outputPath, serialized, 'utf8')
         else process.stdout.write(serialized)
     })

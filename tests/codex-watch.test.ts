@@ -89,11 +89,11 @@ describe('Codex live usage processing', () => {
       accountUpdateSeen: true,
       accountEmails: { 'account-one': 'one@example.test' },
     }
-    const quotaLine = (usedPercent: number) => JSON.stringify({
+    const quotaLine = (usedPercent: number, primaryUsedPercent = 10) => JSON.stringify({
       type: 'event_msg', timestamp: '2026-08-04T12:00:01.000Z',
       payload: { type: 'token_count', rate_limits: {
         limit_id: 'codex', limit_name: 'Codex',
-        primary: { used_percent: 10, window_minutes: 300, resets_at: 1_800_000_000 },
+        primary: { used_percent: primaryUsedPercent, window_minutes: 300, resets_at: 1_800_000_000 },
         secondary: { used_percent: usedPercent, window_minutes: 10080, resets_at: 1_800_100_000 },
       } },
     })
@@ -101,10 +101,13 @@ describe('Codex live usage processing', () => {
     const first = processCodexRateLimitLine(state, quotaLine(25), '/rollout.jsonl')
     expect(first).toMatchObject({
       type: 'rate_limit_snapshot', accountId: 'account-one', accountEmail: 'one@example.test',
-      limitId: 'codex', usedPercent: 25, resetAt: 1_800_100_000, windowMinutes: 10080,
+      limitId: 'codex',
+      primary: { usedPercent: 10, resetAt: 1_800_000_000, windowMinutes: 300 },
+      secondary: { usedPercent: 25, resetAt: 1_800_100_000, windowMinutes: 10080 },
     })
     expect(processCodexRateLimitLine(state, quotaLine(25), '/rollout.jsonl')).toBeNull()
-    expect(processCodexRateLimitLine(state, quotaLine(26), '/rollout.jsonl')?.usedPercent).toBe(26)
+    expect(processCodexRateLimitLine(state, quotaLine(26), '/rollout.jsonl')?.secondary?.usedPercent).toBe(26)
+    expect(processCodexRateLimitLine(state, quotaLine(26, 11), '/rollout.jsonl')?.primary?.usedPercent).toBe(11)
 
     const globalState = new Map<string, string>()
     const left = { ...state, lastRateLimitSignature: undefined }
