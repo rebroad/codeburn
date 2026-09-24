@@ -2355,10 +2355,10 @@ program
   .command('watch')
   .description('Watch new Codex requests and log token usage and costs in real time')
   .option('--output <path>', 'Write records to this file instead of stdout')
-  .option('--ledger <path>', 'Append accounting events for codex-status (default: ~/.cache/codeburn/codex-usage.jsonl)')
+  .option('--ledger <directory>', 'Write account-specific daily accounting shards (default: ~/.cache/codeburn/codex-usage)')
   .option('--format <format>', 'Output format: json, human, or date-style tokens (use --format --help for details)', 'json')
   .action(async (opts: { output?: string; ledger?: string; format: string }) => {
-    await runCodexWatch({ outputPath: opts.output, ledgerPath: opts.ledger, format: opts.format })
+    await runCodexWatch({ outputPath: opts.output, ledgerDirectory: opts.ledger, format: opts.format })
   })
 
 program

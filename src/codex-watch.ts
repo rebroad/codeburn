@@ -59,7 +59,7 @@ export type CodexUsageRecord = {
 export type CodexWatchOptions = {
   outputPath?: string
   format?: string
-  ledgerPath?: string
+  ledgerDirectory?: string
 }
 
 export type CodexRateLimitRecord = {
@@ -75,6 +75,12 @@ export type CodexRateLimitRecord = {
   secondary?: { usedPercent: number; resetAt?: number; windowMinutes?: number }
   source: string
   eventId: string
+}
+
+export function codexLedgerShardPath(root: string, accountId: string, date = new Date()): string {
+  const accountKey = createHash('sha256').update(accountId, 'utf8').digest('hex')
+  const day = date.toISOString().slice(0, 10)
+  return join(root, accountKey, `${day}.jsonl`)
 }
 
 export function codexRateLimitOutputSignature(record: CodexRateLimitRecord): string {
@@ -715,9 +721,17 @@ async function watchRolloutDirectories(
 export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<void> {
   const outputPath = options.outputPath
   const format = options.format ?? 'json'
-  const ledgerPath = options.ledgerPath ?? join(homedir(), '.cache', 'codeburn', 'codex-usage.jsonl')
+  const ledgerDirectory = options.ledgerDirectory
+    ?? process.env['CODEBURN_LEDGER_DIR']
+    ?? join(homedir(), '.cache', 'codeburn', 'codex-usage')
   if (outputPath) await mkdir(dirname(outputPath), { recursive: true })
-  if (ledgerPath) await mkdir(dirname(ledgerPath), { recursive: true })
+  await mkdir(ledgerDirectory, { recursive: true })
+  const appendLedgerEvent = async (accountId: string | undefined, event: Record<string, unknown>): Promise<void> => {
+    if (!accountId) return
+    const path = codexLedgerShardPath(ledgerDirectory, accountId)
+    await mkdir(dirname(path), { recursive: true })
+    await appendFile(path, JSON.stringify(event) + '\n', 'utf8')
+  }
   await refreshCodexPricing()
   const modelAliases = await loadCodexModelAliases()
   const accountInfo = await loadCodexAccountInfo()
@@ -780,8 +794,7 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
         }
         const record = processCodexLine(state.usage, line, path)
         if (record) {
-          if (ledgerPath) {
-            await appendFile(ledgerPath, JSON.stringify({
+          await appendLedgerEvent(record.accountId, {
             event_id: record.eventId,
             ...(record.accountId ? { account_id: record.accountId } : {}),
             provider: 'openai',
@@ -807,8 +820,7 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
             usage_source: record.usageSource,
             usage_unknown: record.usageUnknown,
             response_id: record.responseId,
-            }) + '\n', 'utf8')
-          }
+          })
           const serialized = formatCodexUsageRecord(record, format) + '\n'
           if (outputPath) await appendFile(outputPath, serialized, 'utf8')
           else process.stdout.write(serialized)
@@ -816,35 +828,33 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
 
         const rateLimit = processCodexRateLimitLine(state.usage, line, path, seenRateLimits)
         if (!rateLimit) return
-        if (ledgerPath) {
-          await appendFile(ledgerPath, JSON.stringify({
-            event_id: rateLimit.eventId,
-            event_type: rateLimit.type,
-            ...(rateLimit.accountId ? { account_id: rateLimit.accountId } : {}),
-            provider: 'openai',
-            updated_at: Number.isFinite(Date.parse(rateLimit.timestamp))
-              ? Math.floor(Date.parse(rateLimit.timestamp) / 1000)
-              : Math.floor(Date.parse(new Date().toISOString()) / 1000),
-            total_usage_usd: 0,
-            total_usage_usd_with_prewarm: 0,
-            total_tokens: 0,
-            input_tokens: 0,
-            cached_input_tokens: 0,
-            output_tokens: 0,
-            reasoning_output_tokens: 0,
-            last_backend_limit_id: rateLimit.limitId,
-            last_backend_limit_name: rateLimit.limitName,
-            last_backend_used_percent: (rateLimit.secondary ?? rateLimit.primary)?.usedPercent,
-            last_backend_resets_at: (rateLimit.secondary ?? rateLimit.primary)?.resetAt,
-            last_backend_window_minutes: (rateLimit.secondary ?? rateLimit.primary)?.windowMinutes,
-            last_backend_primary_used_percent: rateLimit.primary?.usedPercent,
-            last_backend_primary_resets_at: rateLimit.primary?.resetAt,
-            last_backend_primary_window_minutes: rateLimit.primary?.windowMinutes,
-            last_backend_secondary_used_percent: rateLimit.secondary?.usedPercent,
-            last_backend_secondary_resets_at: rateLimit.secondary?.resetAt,
-            last_backend_secondary_window_minutes: rateLimit.secondary?.windowMinutes,
-          }) + '\n', 'utf8')
-        }
+        await appendLedgerEvent(rateLimit.accountId, {
+          event_id: rateLimit.eventId,
+          event_type: rateLimit.type,
+          ...(rateLimit.accountId ? { account_id: rateLimit.accountId } : {}),
+          provider: 'openai',
+          updated_at: Number.isFinite(Date.parse(rateLimit.timestamp))
+            ? Math.floor(Date.parse(rateLimit.timestamp) / 1000)
+            : Math.floor(Date.parse(new Date().toISOString()) / 1000),
+          total_usage_usd: 0,
+          total_usage_usd_with_prewarm: 0,
+          total_tokens: 0,
+          input_tokens: 0,
+          cached_input_tokens: 0,
+          output_tokens: 0,
+          reasoning_output_tokens: 0,
+          last_backend_limit_id: rateLimit.limitId,
+          last_backend_limit_name: rateLimit.limitName,
+          last_backend_used_percent: (rateLimit.secondary ?? rateLimit.primary)?.usedPercent,
+          last_backend_resets_at: (rateLimit.secondary ?? rateLimit.primary)?.resetAt,
+          last_backend_window_minutes: (rateLimit.secondary ?? rateLimit.primary)?.windowMinutes,
+          last_backend_primary_used_percent: rateLimit.primary?.usedPercent,
+          last_backend_primary_resets_at: rateLimit.primary?.resetAt,
+          last_backend_primary_window_minutes: rateLimit.primary?.windowMinutes,
+          last_backend_secondary_used_percent: rateLimit.secondary?.usedPercent,
+          last_backend_secondary_resets_at: rateLimit.secondary?.resetAt,
+          last_backend_secondary_window_minutes: rateLimit.secondary?.windowMinutes,
+        })
         const outputSignature = codexRateLimitOutputSignature(rateLimit)
         const outputKey = JSON.stringify([rateLimit.accountId, rateLimit.limitId])
         if (lastRateLimitOutput.get(outputKey) === outputSignature) return
@@ -881,7 +891,8 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
     void flushPending().catch(error => process.stderr.write(`codeburn watch: ${String(error)}\n`))
   }
   const closeDirectoryWatchers = await watchRolloutDirectories(codexHome(), schedulePath)
-  process.stderr.write(`Watching Codex sessions; ${outputPath ? `logging to ${outputPath}` : 'writing records to stdout'}${ledgerPath ? `; accounting to ${ledgerPath}` : ''} (Ctrl-C to stop)\n`)
+  const ledgerDescription = `; account/day accounting shards in ${ledgerDirectory}`
+  process.stderr.write(`Watching Codex sessions; ${outputPath ? `logging to ${outputPath}` : 'writing records to stdout'}${ledgerDescription} (Ctrl-C to stop)\n`)
   await new Promise<void>((resolve) => {
     const stop = () => { closeDirectoryWatchers(); resolve() }
     process.once('SIGINT', stop)
