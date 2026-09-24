@@ -65,6 +65,8 @@ export type CodexWatchOptions = {
 export type CodexRateLimitRecord = {
   type: 'rate_limit_snapshot'
   timestamp: string
+  ordinal?: number
+  sessionId?: string
   accountId?: string
   accountEmail?: string
   limitId?: string
@@ -99,7 +101,7 @@ export function formatCodexRateLimitRecord(record: CodexRateLimitRecord, format:
     })
   }
   const rendered = windows.map(([window, duration]) => `${duration} ${window.usedPercent}%`).join(', ')
-  return `Codex quota: ${rendered} account=${record.accountEmail ?? record.accountId ?? '-'}`
+  return `Codex quota ${record.timestamp} session=${record.sessionId ?? '-'} ordinal=${record.ordinal ?? '-'}: ${rendered} account=${record.accountEmail ?? record.accountId ?? '-'} source=${record.source}`
 }
 
 export type CodexWatchFileState = {
@@ -414,9 +416,10 @@ export function processCodexRateLimitLine(
   }
 
   const timestamp = stringValue(entry['timestamp']) ?? new Date().toISOString()
+  const ordinal = Number.isSafeInteger(entry['ordinal']) ? entry['ordinal'] as number : undefined
   const eventId = createHash('sha256').update(`codex-rate-limit\0${signature}\0${timestamp}`).digest('hex')
   return {
-    type: 'rate_limit_snapshot', timestamp, accountId, accountEmail,
+    type: 'rate_limit_snapshot', timestamp, ordinal, sessionId: state.sessionId, accountId, accountEmail,
     limitId, limitName, primary, secondary,
     source, eventId,
   }
@@ -430,8 +433,9 @@ Watch output formats:
   json
     Full JSON record, including rate_limit_snapshot updates when quota values
     change. Rate-limit windows are keyed by duration (for example, 5h or
-    weekly). The backend account is available as accountEmail when known;
-    accountId remains available for stable attribution.
+    weekly). Quota records include the rollout timestamp, sessionId, ordinal,
+    and source file for correlation. The backend account is available as
+    accountEmail when known; accountId remains available for stable attribution.
 
   human
     Human-readable output using:

@@ -89,10 +89,11 @@ describe('Codex live usage processing', () => {
     const state: CodexWatchState = {
       accountId: 'account-one',
       accountUpdateSeen: true,
+      sessionId: 'session-1',
       accountEmails: { 'account-one': 'one@example.test' },
     }
     const quotaLine = (usedPercent: number, primaryUsedPercent = 10) => JSON.stringify({
-      type: 'event_msg', timestamp: '2026-08-04T12:00:01.000Z',
+      type: 'event_msg', timestamp: '2026-08-04T12:00:01.000Z', ordinal: 21,
       payload: { type: 'token_count', rate_limits: {
         limit_id: 'codex', limit_name: 'Codex',
         primary: { used_percent: primaryUsedPercent, window_minutes: 300, resets_at: 1_800_000_000 },
@@ -103,13 +104,15 @@ describe('Codex live usage processing', () => {
     const first = processCodexRateLimitLine(state, quotaLine(25), '/rollout.jsonl')
     expect(first).toMatchObject({
       type: 'rate_limit_snapshot', accountId: 'account-one', accountEmail: 'one@example.test',
+      timestamp: '2026-08-04T12:00:01.000Z', ordinal: 21, sessionId: 'session-1',
       limitId: 'codex',
       primary: { usedPercent: 10, resetAt: 1_800_000_000, windowMinutes: 300 },
       secondary: { usedPercent: 25, resetAt: 1_800_100_000, windowMinutes: 10080 },
     })
-    expect(formatCodexRateLimitRecord(first!, 'human')).toContain('5h 10%, weekly 25%')
+    expect(formatCodexRateLimitRecord(first!, 'human')).toContain('Codex quota 2026-08-04T12:00:01.000Z session=session-1 ordinal=21: 5h 10%, weekly 25%')
     const json = JSON.parse(formatCodexRateLimitRecord(first!, 'json')) as Record<string, unknown>
     expect(json['windows']).toMatchObject({ '5h': { usedPercent: 10 }, weekly: { usedPercent: 25 } })
+    expect(json).toMatchObject({ timestamp: '2026-08-04T12:00:01.000Z', ordinal: 21, sessionId: 'session-1', source: '/rollout.jsonl' })
     expect(json).not.toHaveProperty('primary')
     expect(json).not.toHaveProperty('secondary')
     expect(codexRateLimitDurationLabel(43200)).toBe('monthly')
