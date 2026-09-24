@@ -109,7 +109,7 @@ describe('Codex live usage processing', () => {
       primary: { usedPercent: 10, resetAt: 1_800_000_000, windowMinutes: 300 },
       secondary: { usedPercent: 25, resetAt: 1_800_100_000, windowMinutes: 10080 },
     })
-    expect(formatCodexRateLimitRecord(first!, 'human')).toBe('2026-08-04T12:00:01.000Z usage: 5h = 10% weekly = 25% account=one@example.test')
+    expect(formatCodexRateLimitRecord(first!, 'human')).toBe('2026-08-04T12:00:01.000Z usage: 5h = 10% weekly = 25% session-1 one@example.test')
     expect(formatCodexRateLimitRecord(first!, '%t $%d i=%i ci=%c o=%o co=%w r=%r %m %s %a')).toBe(
       '2026-08-04T12:00:01.000Z usage: 5h = 10% weekly = 25% session-1 one@example.test',
     )

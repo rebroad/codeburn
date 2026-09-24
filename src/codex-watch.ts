@@ -455,7 +455,7 @@ export function processCodexRateLimitLine(
   }
 }
 
-const DEFAULT_HUMAN_FORMAT = '%t %m account=%a input=%i cached=%c cache_write=%w output=%o reasoning=%r cost=$%d credits=%C'
+const DEFAULT_HUMAN_FORMAT = '%t $%d i=%i ci=%c o=%o co=%w r=%r %m %s %a'
 
 export const CODEX_WATCH_FORMAT_HELP = `
 Watch output formats:
