@@ -152,6 +152,11 @@ describe('Codex live usage processing', () => {
     expect(processCodexRateLimitLine(jitterAccount, quotaLine(25, 51), '/jitter.jsonl', jitterState)?.primary?.usedPercent).toBe(51)
     expect(processCodexRateLimitLine(jitterAccount, quotaLine(25, 50), '/jitter.jsonl', jitterState)).toBeNull()
     expect(processCodexRateLimitLine(jitterAccount, quotaLine(25, 49), '/jitter.jsonl', jitterState)?.primary?.usedPercent).toBe(49)
+
+    const weeklyJitterState = new Map<string, string>()
+    expect(processCodexRateLimitLine(jitterAccount, quotaLine(85, 7), '/weekly-jitter.jsonl', weeklyJitterState)?.secondary?.usedPercent).toBe(85)
+    expect(processCodexRateLimitLine(jitterAccount, quotaLine(84, 7), '/weekly-jitter.jsonl', weeklyJitterState)).toBeNull()
+    expect(processCodexRateLimitLine(jitterAccount, quotaLine(85, 7), '/weekly-jitter.jsonl', weeklyJitterState)).toBeNull()
   })
 
   it('uses auth fallback only when the rollout has no account signal', () => {

@@ -429,24 +429,32 @@ export function processCodexRateLimitLine(
     }
   }
   let primary = readWindow(snapshot['primary'])
-  const secondary = readWindow(snapshot['secondary'])
+  let secondary = readWindow(snapshot['secondary'])
   if (!primary && !secondary) return null
 
   const accountId = state.accountUpdateSeen ? state.accountId : state.fallbackAccountId
   const accountEmail = accountId ? state.accountEmails?.[accountId] : undefined
   const key = JSON.stringify([accountId, limitId])
   const previousSignature = seenRateLimits?.get(key) ?? state.lastRateLimitSignature
-  if (previousSignature && primary) {
+  if (previousSignature) {
     try {
       const previous = JSON.parse(previousSignature) as [unknown, unknown, unknown, CodexRateLimitRecord['primary'], CodexRateLimitRecord['secondary']]
-      const previousPrimary = previous[3]
-      if (previousPrimary
-        && previousPrimary.windowMinutes === primary.windowMinutes
-        && previousPrimary.resetAt === primary.resetAt
-        && primary.usedPercent < previousPrimary.usedPercent
-        && previousPrimary.usedPercent - primary.usedPercent <= 1) {
-        primary = previousPrimary
+      const suppressDownwardJitter = (
+        previousWindow: CodexRateLimitRecord['primary'],
+        currentWindow: CodexRateLimitRecord['primary'],
+      ): CodexRateLimitRecord['primary'] => {
+        if (previousWindow
+          && currentWindow
+          && previousWindow.windowMinutes === currentWindow.windowMinutes
+          && previousWindow.resetAt === currentWindow.resetAt
+          && currentWindow.usedPercent < previousWindow.usedPercent
+          && previousWindow.usedPercent - currentWindow.usedPercent <= 1) {
+          return previousWindow
+        }
+        return currentWindow
       }
+      primary = suppressDownwardJitter(previous[3], primary)
+      secondary = suppressDownwardJitter(previous[4], secondary)
     } catch {
       // Ignore malformed prior state and treat this as a fresh quota snapshot.
     }
