@@ -89,7 +89,7 @@ function routedUsageRecord(responseId: string, model: string): string {
 describe('Codex live usage processing', () => {
   it('builds account-isolated UTC daily ledger shard paths', () => {
     expect(codexLedgerShardPath('/ledger', 'account-one', new Date('2026-08-04T23:30:00-04:00')))
-      .toBe('/ledger/fee4c3fef903ecc2a3b6cc4dd8fd8a5bb674a29d8135490449d1bc2dd8480b71/2026-08-05.jsonl')
+      .toBe('/ledger/fee4c3fef903ecc2a3b6cc4dd8fd8a5bb674a29d8135490449d1bc2dd8480b71-2026-08-05.jsonl')
     expect(codexLedgerShardPath('/ledger', 'account-two', new Date('2026-08-05T03:30:00Z')))
       .not.toBe(codexLedgerShardPath('/ledger', 'account-one', new Date('2026-08-05T03:30:00Z')))
   })

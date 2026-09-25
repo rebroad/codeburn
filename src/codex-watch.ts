@@ -80,7 +80,7 @@ export type CodexRateLimitRecord = {
 export function codexLedgerShardPath(root: string, accountId: string, date = new Date()): string {
   const accountKey = createHash('sha256').update(accountId, 'utf8').digest('hex')
   const day = date.toISOString().slice(0, 10)
-  return join(root, accountKey, `${day}.jsonl`)
+  return join(root, `${accountKey}-${day}.jsonl`)
 }
 
 export function codexRateLimitOutputSignature(record: CodexRateLimitRecord): string {
@@ -796,16 +796,12 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
         if (record) {
           await appendLedgerEvent(record.accountId, {
             event_id: record.eventId,
-            ...(record.accountId ? { account_id: record.accountId } : {}),
             provider: 'openai',
             updated_at: Number.isFinite(Date.parse(record.timestamp))
               ? Math.floor(Date.parse(record.timestamp) / 1000)
               : Math.floor(Date.parse(record.loggedAt) / 1000),
             total_usage_usd: record.costUsd,
             priced: record.costUsd !== null,
-            // Kept for codex-status schema compatibility. Codex does not emit
-            // a separate billable prewarm token category.
-            total_usage_usd_with_prewarm: record.costUsd,
             total_tokens: record.totalTokens,
             input_tokens: record.inputTokens,
             cached_input_tokens: record.cachedInputTokens,
@@ -813,13 +809,7 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
             output_tokens: record.outputTokens,
             reasoning_output_tokens: record.reasoningTokens,
             model: record.model,
-            credits: record.credits,
-            ...(record.reportedAmount !== undefined ? { reported_amount: record.reportedAmount } : {}),
-            session_id: record.sessionId,
-            source: record.source,
             usage_source: record.usageSource,
-            usage_unknown: record.usageUnknown,
-            response_id: record.responseId,
           })
           const serialized = formatCodexUsageRecord(record, format) + '\n'
           if (outputPath) await appendFile(outputPath, serialized, 'utf8')
@@ -830,19 +820,10 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
         if (!rateLimit) return
         await appendLedgerEvent(rateLimit.accountId, {
           event_id: rateLimit.eventId,
-          event_type: rateLimit.type,
-          ...(rateLimit.accountId ? { account_id: rateLimit.accountId } : {}),
           provider: 'openai',
           updated_at: Number.isFinite(Date.parse(rateLimit.timestamp))
             ? Math.floor(Date.parse(rateLimit.timestamp) / 1000)
             : Math.floor(Date.parse(new Date().toISOString()) / 1000),
-          total_usage_usd: 0,
-          total_usage_usd_with_prewarm: 0,
-          total_tokens: 0,
-          input_tokens: 0,
-          cached_input_tokens: 0,
-          output_tokens: 0,
-          reasoning_output_tokens: 0,
           last_backend_limit_id: rateLimit.limitId,
           last_backend_limit_name: rateLimit.limitName,
           last_backend_used_percent: (rateLimit.secondary ?? rateLimit.primary)?.usedPercent,
