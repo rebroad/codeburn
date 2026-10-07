@@ -1,0 +1,3 @@
+# Repository instructions
+
+After every CodeBurn source change, rebuild and update the installed CodeBurn CLI before finishing. Use the configured external build tree at `/mnt/kingston/builds/rebroad/src/codeburn.build`: synchronize the complete source tree with `cpto --nogit`, build with `npm run build:cli` and the current source commit in `CODEBURN_COMMIT`, then verify the installed executable at `/home/rebroad/.nvm/versions/node/v22.23.2/bin/codeburn --version` reports that commit. This executable links to the external build tree, so rebuilding that tree updates the installed CLI. Do not stop after committing or pushing.
