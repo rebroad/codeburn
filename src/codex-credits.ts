@@ -1,4 +1,5 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { isDeepStrictEqual } from 'node:util'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fetchWithTimeout } from './fetch-utils.js'
@@ -98,6 +99,12 @@ async function fetchPricing(): Promise<Record<string, CodexCreditRate>> {
   const response = await fetchWithTimeout(PRICING_URL)
   if (!response.ok) throw new Error(`HTTP ${response.status}`)
   const rates = parseCodexPricingMarkdown(await response.text())
+  try {
+    const existing = JSON.parse(await readFile(cachePath(), 'utf8')) as PricingCache
+    if (existing.rates && isDeepStrictEqual(existing.rates, rates)) return rates
+  } catch {
+    // Missing or malformed caches are replaced with the fetched pricing data.
+  }
   await mkdir(dirname(cachePath()), { recursive: true })
   await writeFile(cachePath(), JSON.stringify({ updatedAt: new Date().toISOString(), rates }, null, 2))
   return rates

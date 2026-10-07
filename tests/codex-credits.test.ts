@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { codexCredits, codexCreditRate, parseCodexPricingMarkdown, refreshCodexPricing } from '../src/codex-credits.js'
@@ -143,5 +143,28 @@ describe('Codex pricing page parsing', () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')))
     await refreshCodexPricing()
     expect(codexCreditRate('gpt-5.6-luna')?.input).toBe(9)
+  })
+
+  it('preserves the cache timestamp when fetched rates have not changed', async () => {
+    const cacheDir = await mkdtemp(join(tmpdir(), 'codeburn-pricing-'))
+    process.env['CODEBURN_CACHE_DIR'] = cacheDir
+    const cachePath = join(cacheDir, 'codex-pricing.json')
+    const original = JSON.stringify({
+      updatedAt: '2026-10-01T12:00:00.000Z',
+      rates: { 'gpt-5.6-luna': { input: 5, cachedInput: 0.5, cacheWrite: 6.25, output: 30 } },
+    }, null, 2)
+    await writeFile(cachePath, original)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => [
+        '### Standard pricing data',
+        '| Model | Input | Cached input | Cache writes | Output |',
+        '| gpt-5.6-luna | $0.20 | $0.02 | $0.25 | $1.20 |',
+      ].join('\n'),
+    }))
+
+    await refreshCodexPricing()
+
+    expect(await readFile(cachePath, 'utf8')).toBe(original)
   })
 })
