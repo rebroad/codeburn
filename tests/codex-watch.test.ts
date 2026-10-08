@@ -119,6 +119,8 @@ describe('Codex live usage processing', () => {
       secondary: { usedPercent: 25, resetAt: 1_800_100_000, windowMinutes: 10080 },
     })
     expect(formatCodexRateLimitRecord(first!, 'human')).toBe('2026-08-04T12:00:01.000Z usage: 5h = 10% weekly = 25% session-1 one@example.test')
+    expect(formatCodexRateLimitRecord({ ...first!, source: '/codex/ephemeral_sessions/rollout.jsonl' }, 'human'))
+      .toContain('\u001b[90msession-1\u001b[39m')
     expect(formatCodexRateLimitRecord(first!, '%t $%d i=%i ci=%c o=%o co=%w r=%r %m %s %a')).toBe(
       '2026-08-04T12:00:01.000Z usage: 5h = 10% weekly = 25% session-1 one@example.test',
     )
@@ -152,6 +154,11 @@ describe('Codex live usage processing', () => {
     expect(processCodexRateLimitLine(jitterAccount, quotaLine(25, 51), '/jitter.jsonl', jitterState)?.primary?.usedPercent).toBe(51)
     expect(processCodexRateLimitLine(jitterAccount, quotaLine(25, 50), '/jitter.jsonl', jitterState)).toBeNull()
     expect(processCodexRateLimitLine(jitterAccount, quotaLine(25, 49), '/jitter.jsonl', jitterState)?.primary?.usedPercent).toBe(49)
+
+    const changedResetState = new Map<string, string>()
+    expect(processCodexRateLimitLine(jitterAccount, quotaLine(9), '/reset-jitter.jsonl', changedResetState)).not.toBeNull()
+    const onePointDropWithResetClockDrift = quotaLine(8).replaceAll('1800000000', '1800000001').replaceAll('1800100000', '1800100001')
+    expect(processCodexRateLimitLine(jitterAccount, onePointDropWithResetClockDrift, '/reset-jitter.jsonl', changedResetState)).toBeNull()
 
     const weeklyJitterState = new Map<string, string>()
     expect(processCodexRateLimitLine(jitterAccount, quotaLine(85, 7), '/weekly-jitter.jsonl', weeklyJitterState)?.secondary?.usedPercent).toBe(85)

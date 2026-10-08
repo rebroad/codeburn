@@ -117,9 +117,11 @@ export function formatCodexRateLimitRecord(record: CodexRateLimitRecord, format:
   }
   const usage = `usage: ${windows.map(([window, duration]) => `${duration} = ${window.usedPercent}%`).join(' ')}`
   const template = format === 'human' ? DEFAULT_HUMAN_FORMAT : format.replace(/^\+/, '')
+  const ephemeral = record.source.split(/[\\/]/).includes('ephemeral_sessions')
+  const sessionId = record.sessionId ?? '-'
   const values: Record<string, string> = {
     t: record.timestamp,
-    s: record.sessionId ?? '-',
+    s: ephemeral ? `\u001b[90m${sessionId}\u001b[39m` : sessionId,
     a: record.accountEmail ?? record.accountId ?? '-',
   }
   const parts = template.split(/([\t\n\r ,]+)/)
@@ -446,8 +448,7 @@ export function processCodexRateLimitLine(
         if (previousWindow
           && currentWindow
           && previousWindow.windowMinutes === currentWindow.windowMinutes
-          && previousWindow.resetAt === currentWindow.resetAt
-          && currentWindow.usedPercent < previousWindow.usedPercent
+          && currentWindow.usedPercent <= previousWindow.usedPercent
           && previousWindow.usedPercent - currentWindow.usedPercent <= 1) {
           return previousWindow
         }
@@ -682,6 +683,7 @@ async function discoverRollouts(root: string): Promise<string[]> {
     }
   }
   await visit(join(root, 'sessions'), 3)
+  await visit(join(root, 'ephemeral_sessions'), 3)
   await visit(join(root, 'archived_sessions'), 1)
   return files
 }
@@ -718,7 +720,7 @@ async function watchRolloutDirectories(
       .map(entry => addDirectory(join(directory, entry.name), emitExistingFiles)))
   }
 
-  for (const directory of [join(root, 'sessions'), join(root, 'archived_sessions')]) {
+  for (const directory of [join(root, 'sessions'), join(root, 'ephemeral_sessions'), join(root, 'archived_sessions')]) {
     await addDirectory(directory, false)
   }
   return () => {
