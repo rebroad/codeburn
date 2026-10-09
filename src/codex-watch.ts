@@ -728,6 +728,16 @@ async function watchRolloutDirectories(
   }
 }
 
+async function reconcileRollouts(
+  root: string,
+  onChange: (path: string) => void,
+): Promise<void> {
+  // fs.watch can miss events while a directory is being created or when the
+  // platform drops notifications. Re-discovering paths also closes the gap
+  // between the initial file scan and arming the directory watchers.
+  for (const path of await discoverRollouts(root)) onChange(path)
+}
+
 export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<void> {
   const outputPath = options.outputPath
   const format = options.format ?? 'json'
@@ -881,11 +891,27 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
     pendingPaths.add(path)
     void flushPending().catch(error => process.stderr.write(`codeburn watch: ${String(error)}\n`))
   }
-  const closeDirectoryWatchers = await watchRolloutDirectories(codexHome(), schedulePath)
+  const root = codexHome()
+  const closeDirectoryWatchers = await watchRolloutDirectories(root, schedulePath)
+  let reconciliationInFlight = false
+  const reconcile = async (): Promise<void> => {
+    if (reconciliationInFlight) return
+    reconciliationInFlight = true
+    try {
+      await reconcileRollouts(root, schedulePath)
+    } finally {
+      reconciliationInFlight = false
+    }
+  }
+  await reconcile()
+  const reconcileTimer = setInterval(() => {
+    void reconcile()
+      .catch(error => process.stderr.write(`codeburn watch: rollout reconciliation failed: ${String(error)}\n`))
+  }, 5_000)
   const ledgerDescription = `; account/day accounting shards in ${ledgerDirectory}`
   process.stderr.write(`Watching Codex sessions; ${outputPath ? `logging to ${outputPath}` : 'writing records to stdout'}${ledgerDescription} (Ctrl-C to stop)\n`)
   await new Promise<void>((resolve) => {
-    const stop = () => { closeDirectoryWatchers(); resolve() }
+    const stop = () => { clearInterval(reconcileTimer); closeDirectoryWatchers(); resolve() }
     process.once('SIGINT', stop)
     process.once('SIGTERM', stop)
   })
