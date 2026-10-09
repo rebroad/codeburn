@@ -103,6 +103,13 @@ export function codexRateLimitDurationLabel(minutes?: number): string {
   return `${minutes}m`
 }
 
+function formatSessionId(source: string, sessionId: string): string {
+  const ephemeral = source.split(/[\\/]/).includes('ephemeral_sessions')
+  return ephemeral && sessionId !== '-'
+    ? `\u001b[33m${sessionId}\u001b[39m`
+    : sessionId
+}
+
 export function formatCodexRateLimitRecord(record: CodexRateLimitRecord, format: string): string {
   const windows = [
     ...(record.primary ? [[record.primary, codexRateLimitDurationLabel(record.primary.windowMinutes)] as const] : []),
@@ -117,11 +124,10 @@ export function formatCodexRateLimitRecord(record: CodexRateLimitRecord, format:
   }
   const usage = `usage: ${windows.map(([window, duration]) => `${duration} = ${window.usedPercent}%`).join(' ')}`
   const template = format === 'human' ? DEFAULT_HUMAN_FORMAT : format.replace(/^\+/, '')
-  const ephemeral = record.source.split(/[\\/]/).includes('ephemeral_sessions')
-  const sessionId = record.sessionId ?? '-'
+  const sessionId = formatSessionId(record.source, record.sessionId ?? '-')
   const values: Record<string, string> = {
     t: record.timestamp,
-    s: ephemeral ? `\u001b[90m${sessionId}\u001b[39m` : sessionId,
+    s: sessionId,
     a: record.accountEmail ?? record.accountId ?? '-',
   }
   const parts = template.split(/([\t\n\r ,]+)/)
@@ -527,7 +533,7 @@ export function formatCodexUsageRecord(record: CodexUsageRecord, format: string)
     t: record.timestamp,
     l: record.loggedAt,
     m: record.model,
-    s: record.sessionId,
+    s: record.sessionId ? formatSessionId(record.source, record.sessionId) : null,
     p: record.projectPath,
     i: record.inputTokens,
     c: record.cachedInputTokens,
