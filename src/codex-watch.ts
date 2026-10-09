@@ -700,20 +700,44 @@ async function watchRolloutDirectories(
 ): Promise<() => void> {
   const watchers = new Map<string, FSWatcher>()
   const addDirectory = async (directory: string, emitExistingFiles: boolean): Promise<void> => {
-    if (watchers.has(directory)) return
+    if (!watchers.has(directory)) {
+      const watcher = watch(directory, (_event, filename) => {
+        if (filename === null) {
+          // Some backends report that something changed without naming it.
+          // Re-scan this subtree and make sure newly created directories are
+          // watched, rather than dropping the notification.
+          void addDirectory(directory, true).catch(error => {
+            process.stderr.write(`codeburn watch: directory reconciliation failed for ${directory}: ${String(error)}\n`)
+          })
+          return
+        }
+        const path = join(directory, filename.toString())
+        onChange(path)
+        void stat(path).then(info => {
+          if (info.isDirectory()) {
+            void addDirectory(path, true).catch(error => {
+              process.stderr.write(`codeburn watch: directory reconciliation failed for ${path}: ${String(error)}\n`)
+            })
+          }
+        }).catch(() => {})
+      })
+      watcher.on('error', error => {
+        process.stderr.write(`codeburn watch: directory watcher failed for ${directory}: ${String(error)}\n`)
+        if (watchers.get(directory) === watcher) {
+          watchers.delete(directory)
+          watcher.close()
+          void addDirectory(directory, true).catch(recoveryError => {
+            process.stderr.write(`codeburn watch: directory recovery failed for ${directory}: ${String(recoveryError)}\n`)
+          })
+        }
+      })
+      watchers.set(directory, watcher)
+    }
+
+    // Arm the watcher before listing contents. Enumerating after arming both
+    // closes the list/watch race and discovers files already present when a
+    // newly created rollout directory is attached.
     const entries = await readdir(directory, { withFileTypes: true }).catch(() => [])
-    const watcher = watch(directory, (_event, filename) => {
-      if (!filename) return
-      const path = join(directory, filename.toString())
-      onChange(path)
-      void stat(path).then(info => {
-        if (info.isDirectory()) void addDirectory(path, true)
-      }).catch(() => {})
-    })
-    watcher.on('error', error => {
-      process.stderr.write(`codeburn watch: directory watcher failed for ${directory}: ${String(error)}\n`)
-    })
-    watchers.set(directory, watcher)
     if (emitExistingFiles) {
       for (const entry of entries) {
         if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.endsWith('.jsonl')) {
@@ -727,21 +751,11 @@ async function watchRolloutDirectories(
   }
 
   for (const directory of [join(root, 'sessions'), join(root, 'ephemeral_sessions'), join(root, 'archived_sessions')]) {
-    await addDirectory(directory, false)
+    await addDirectory(directory, true)
   }
   return () => {
     for (const watcher of watchers.values()) watcher.close()
   }
-}
-
-async function reconcileRollouts(
-  root: string,
-  onChange: (path: string) => void,
-): Promise<void> {
-  // fs.watch can miss events while a directory is being created or when the
-  // platform drops notifications. Re-discovering paths also closes the gap
-  // between the initial file scan and arming the directory watchers.
-  for (const path of await discoverRollouts(root)) onChange(path)
 }
 
 export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<void> {
@@ -899,25 +913,10 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
   }
   const root = codexHome()
   const closeDirectoryWatchers = await watchRolloutDirectories(root, schedulePath)
-  let reconciliationInFlight = false
-  const reconcile = async (): Promise<void> => {
-    if (reconciliationInFlight) return
-    reconciliationInFlight = true
-    try {
-      await reconcileRollouts(root, schedulePath)
-    } finally {
-      reconciliationInFlight = false
-    }
-  }
-  await reconcile()
-  const reconcileTimer = setInterval(() => {
-    void reconcile()
-      .catch(error => process.stderr.write(`codeburn watch: rollout reconciliation failed: ${String(error)}\n`))
-  }, 5_000)
   const ledgerDescription = `; account/day accounting shards in ${ledgerDirectory}`
   process.stderr.write(`Watching Codex sessions; ${outputPath ? `logging to ${outputPath}` : 'writing records to stdout'}${ledgerDescription} (Ctrl-C to stop)\n`)
   await new Promise<void>((resolve) => {
-    const stop = () => { clearInterval(reconcileTimer); closeDirectoryWatchers(); resolve() }
+    const stop = () => { closeDirectoryWatchers(); resolve() }
     process.once('SIGINT', stop)
     process.once('SIGTERM', stop)
   })
