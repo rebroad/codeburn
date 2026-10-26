@@ -37,7 +37,7 @@ const CREDITS_PER_MILLION: Record<string, CodexCreditRate> = {
   'gpt-5.4-mini': { input: 18.75, cachedInput: 1.875, cacheWrite: null, output: 113 },
 }
 
-type PricingCache = { version: 2; updatedAt: string; rates: Record<string, CodexCreditRate> }
+type PricingCache = { version: 3; updatedAt: string; rates: Record<string, CodexCreditRate> }
 
 function cachePath(): string {
   const root = process.env['CODEBURN_CACHE_DIR'] ?? join(homedir(), '.cache', 'codeburn')
@@ -67,13 +67,14 @@ export function parseCodexPricingMarkdown(markdown: string): Record<string, Code
   for (const line of standardTable.split(/\r?\n/)) {
     if (!line.trim().startsWith('|')) continue
     const cells = line.split('|').slice(1, -1).map(cell => cell.trim().toLowerCase())
-    if (cells.includes('model') && cells.includes('input') && cells.includes('output')) {
-      const find = (predicate: (cell: string) => boolean) => cells.findIndex(predicate)
-      const model = find(cell => cell === 'model')
-      const input = find(cell => cell === 'input')
-      const cachedInput = find(cell => /cached?\s*input/.test(cell))
-      const cacheWrite = find(cell => /cache.?write|\bwrite\b/.test(cell))
-      const output = find(cell => cell === 'output')
+    if (cells.includes('model') && cells.some(cell => cell === 'input' || cell === 'short context input')
+      && cells.some(cell => cell === 'output' || cell === 'short context output')) {
+      const find = (...labels: string[]) => cells.findIndex(cell => labels.includes(cell))
+      const model = find('model')
+      const input = find('short context input', 'input')
+      const cachedInput = find('short context cached input', 'cached input')
+      const cacheWrite = find('short context 30m write', 'cache writes', 'cache write', '30m write')
+      const output = find('short context output', 'output')
       columns = model >= 0 && input >= 0 && cachedInput >= 0 && output >= 0
         ? { model, input, cachedInput, cacheWrite, output }
         : null
@@ -105,7 +106,7 @@ async function readCachedPricing(): Promise<Record<string, CodexCreditRate> | nu
     const path = cachePath()
     const raw = JSON.parse(await readFile(path, 'utf8')) as PricingCache
     const updated = Date.parse(raw.updatedAt)
-    if (raw.version !== 2 || !Number.isFinite(updated) || Date.now() - updated > CACHE_TTL_MS) return null
+    if (raw.version !== 3 || !Number.isFinite(updated) || Date.now() - updated > CACHE_TTL_MS) return null
     return raw.rates
   } catch {
     return null
@@ -118,12 +119,12 @@ async function fetchPricing(): Promise<Record<string, CodexCreditRate>> {
   const rates = parseCodexPricingMarkdown(await response.text())
   try {
     const existing = JSON.parse(await readFile(cachePath(), 'utf8')) as PricingCache
-    if (existing.version === 2 && existing.rates && isDeepStrictEqual(existing.rates, rates)) return rates
+    if (existing.version === 3 && existing.rates && isDeepStrictEqual(existing.rates, rates)) return rates
   } catch {
     // Missing or malformed caches are replaced with the fetched pricing data.
   }
   await mkdir(dirname(cachePath()), { recursive: true })
-  await writeFile(cachePath(), JSON.stringify({ version: 2, updatedAt: new Date().toISOString(), rates }, null, 2))
+  await writeFile(cachePath(), JSON.stringify({ version: 3, updatedAt: new Date().toISOString(), rates }, null, 2))
   return rates
 }
 
@@ -137,7 +138,7 @@ export async function refreshCodexPricing(): Promise<void> {
     } catch {
       try {
         const stale = JSON.parse(await readFile(cachePath(), 'utf8')) as PricingCache
-        if (stale.version === 2 && stale.rates) Object.assign(CREDITS_PER_MILLION, stale.rates)
+        if (stale.version === 3 && stale.rates) Object.assign(CREDITS_PER_MILLION, stale.rates)
       } catch {
         // Built-in rates keep watch usable when the official page is unavailable.
       }

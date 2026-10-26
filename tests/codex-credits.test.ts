@@ -94,6 +94,16 @@ describe('codexCredits', () => {
 })
 
 describe('Codex pricing page parsing', () => {
+  it('parses the current standard table short-context columns by header', () => {
+    const rates = parseCodexPricingMarkdown([
+      '### Standard pricing data',
+      '| Model | Short context input | Short context output | Short context cached input | Short context 30m write | Short context 12h write | Long context input | Long context output | Long context cached input | Long context 30m write | Long context 12h write |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+      '| gpt-6-luna | $0.10 | $0.50 | $0.01 | $0.125 | $0.25 | $0.20 | $0.75 | $0.02 | $0.25 | $0.50 |',
+    ].join('\n'))
+    expect(rates['gpt-6-luna']).toEqual({ input: 2.5, cachedInput: 0.25, cacheWrite: 3.125, output: 12.5 })
+  })
+
   it('keeps standard-context prices instead of overwriting them with the all-models table', () => {
     const rates = parseCodexPricingMarkdown([
       '## Flagship models',
@@ -124,7 +134,7 @@ describe('Codex pricing page parsing', () => {
   it('uses a fresh cached pricing snapshot without fetching', async () => {
     process.env['CODEBURN_CACHE_DIR'] = await mkdtemp(join(tmpdir(), 'codeburn-pricing-'))
     await writeFile(join(process.env['CODEBURN_CACHE_DIR'], 'codex-pricing.json'), JSON.stringify({
-      version: 2,
+      version: 3,
       updatedAt: new Date().toISOString(),
       rates: { 'gpt-5.6-luna': { input: 7, cachedInput: 0.7, cacheWrite: 8.75, output: 42 } },
     }))
@@ -138,6 +148,7 @@ describe('Codex pricing page parsing', () => {
   it('falls back to a stale valid cache when the pricing page is unavailable', async () => {
     process.env['CODEBURN_CACHE_DIR'] = await mkdtemp(join(tmpdir(), 'codeburn-pricing-'))
     await writeFile(join(process.env['CODEBURN_CACHE_DIR'], 'codex-pricing.json'), JSON.stringify({
+      version: 3,
       updatedAt: '2020-01-01T00:00:00.000Z',
       rates: { 'gpt-5.6-luna': { input: 9, cachedInput: 0.9, cacheWrite: 11.25, output: 54 } },
     }))
@@ -151,6 +162,7 @@ describe('Codex pricing page parsing', () => {
     process.env['CODEBURN_CACHE_DIR'] = cacheDir
     const cachePath = join(cacheDir, 'codex-pricing.json')
     const original = JSON.stringify({
+      version: 3,
       updatedAt: '2026-10-01T12:00:00.000Z',
       rates: { 'gpt-5.6-luna': { input: 5, cachedInput: 0.5, cacheWrite: 6.25, output: 30 } },
     }, null, 2)
