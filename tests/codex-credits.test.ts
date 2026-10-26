@@ -124,6 +124,7 @@ describe('Codex pricing page parsing', () => {
   it('uses a fresh cached pricing snapshot without fetching', async () => {
     process.env['CODEBURN_CACHE_DIR'] = await mkdtemp(join(tmpdir(), 'codeburn-pricing-'))
     await writeFile(join(process.env['CODEBURN_CACHE_DIR'], 'codex-pricing.json'), JSON.stringify({
+      version: 2,
       updatedAt: new Date().toISOString(),
       rates: { 'gpt-5.6-luna': { input: 7, cachedInput: 0.7, cacheWrite: 8.75, output: 42 } },
     }))
