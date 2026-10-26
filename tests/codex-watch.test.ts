@@ -183,6 +183,28 @@ describe('Codex live usage processing', () => {
     expect(processCodexLine(state, usageWithoutAccount('resp-null', { input_tokens: 1 }), '/rollout.jsonl')?.accountId).toBeUndefined()
   })
 
+  it('shows the active auth email for an account ID without a direct email mapping', () => {
+    const state: CodexWatchState = {
+      fallbackAccountId: 'auth-account',
+      accountEmails: { 'auth-account': 'auth@example.test' },
+    }
+    processCodexLine(state, JSON.stringify({
+      type: 'event_msg', payload: { type: 'account_updated', account_id: 'rollout-account' },
+    }), '/rollout.jsonl')
+
+    const usage = processCodexLine(state, usageWithoutAccount('resp-unknown-account', { input_tokens: 1 }), '/rollout.jsonl')
+    expect(usage).toMatchObject({ accountId: 'rollout-account', accountEmail: 'auth@example.test' })
+    expect(formatCodexUsageRecord(usage!, 'account=%a')).toBe('account=auth@example.test')
+
+    const quota = processCodexRateLimitLine(state, JSON.stringify({
+      type: 'event_msg', payload: { type: 'token_count', rate_limits: {
+        limit_id: 'codex', primary: { used_percent: 10, window_minutes: 300 },
+      } },
+    }), '/rollout.jsonl')
+    expect(quota?.accountEmail).toBe('auth@example.test')
+    expect(formatCodexRateLimitRecord(quota!, 'account=%a')).toContain('account=auth@example.test')
+  })
+
   it('reads the current auth account and tolerates missing or malformed auth files', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'codeburn-auth-'))
     const previousHome = process.env['CODEX_HOME']

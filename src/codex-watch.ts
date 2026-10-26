@@ -182,6 +182,13 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined
 }
 
+function resolveCodexAccountEmail(state: CodexWatchState, accountId: string | undefined): string | undefined {
+  if (!accountId) return undefined
+  return state.accountEmails?.[accountId]
+    ?? (accountId === state.accountId ? state.accountEmail : undefined)
+    ?? (!state.accountUpdateSeen ? state.accountEmails?.[state.fallbackAccountId ?? ''] : undefined)
+}
+
 function decodeJwtPayload(token: string): Record<string, unknown> | undefined {
   const encoded = token.split('.')[1]
   if (!encoded) return undefined
@@ -310,7 +317,9 @@ export function processCodexLine(
   if (entry['type'] === 'event_msg' && payload['type'] === 'account_updated') {
     state.accountUpdateSeen = true
     state.accountId = stringValue(payload['account_id'])
-    state.accountEmail = state.accountId ? state.accountEmails?.[state.accountId] : undefined
+    state.accountEmail = state.accountId
+      ? state.accountEmails?.[state.accountId] ?? state.accountEmails?.[state.fallbackAccountId ?? '']
+      : undefined
     return null
   }
 
@@ -336,10 +345,7 @@ export function processCodexLine(
       : billingModel
     const accountId = stringValue(payload['account_id'])
       ?? (state.accountUpdateSeen ? state.accountId : state.fallbackAccountId)
-    const accountEmail = accountId
-      ? state.accountEmails?.[accountId]
-        ?? (accountId === state.accountId ? state.accountEmail : undefined)
-      : undefined
+    const accountEmail = resolveCodexAccountEmail(state, accountId)
     const creditRate = codexCreditRate(billingModel)
     const creditTokens = {
       inputTokens: normalizedInput,
@@ -441,7 +447,7 @@ export function processCodexRateLimitLine(
   if (!primary && !secondary) return null
 
   const accountId = state.accountUpdateSeen ? state.accountId : state.fallbackAccountId
-  const accountEmail = accountId ? state.accountEmails?.[accountId] : undefined
+  const accountEmail = resolveCodexAccountEmail(state, accountId)
   const key = JSON.stringify([accountId, limitId])
   const previousSignature = seenRateLimits?.get(key) ?? state.lastRateLimitSignature
   if (previousSignature) {
@@ -514,9 +520,9 @@ other format field is replaced by the quota usage, and later non-ordinal fields
 and their labels are omitted.
 
 The account value is the email associated with the backend account used by the
-model request; it is the stable account ID when no email mapping is available.
-When rollout account metadata is absent, the current auth.json account is shown
-as an inferred best-effort fallback, and may not identify the credential used
+model request. When its ID has no email mapping, the current auth.json email is
+shown as a best-effort display fallback; the stable ID remains available in
+JSON and for attribution. The fallback may not identify the credential used
 for that request. '-' is shown when no account can be resolved.\n`
 
 function displayValue(value: string | number | null): string {
