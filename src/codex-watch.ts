@@ -822,9 +822,10 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
         try {
           const entry = JSON.parse(line) as Record<string, unknown>
           const payload = entry['payload'] as Record<string, unknown> | undefined
-          if (entry['type'] === 'token_usage_record'
-            && !stringValue(payload?.['account_id'])
-            && !state.usage.accountUpdateSeen) {
+          const accountId = stringValue(payload?.['account_id'])
+          const needsFallbackAccount = !accountId && !state.usage.accountUpdateSeen
+          const needsAccountEmail = !!accountId && !state.usage.accountEmails?.[accountId]
+          if (entry['type'] === 'token_usage_record' && (needsFallbackAccount || needsAccountEmail)) {
             const accountInfo = await loadCodexAccountInfo()
             state.usage.accountEmails = accountInfo.emails
             state.usage.fallbackAccountId = accountInfo.activeAccountId
