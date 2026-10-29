@@ -73,6 +73,8 @@ export type CodexRateLimitRecord = {
   limitName?: string
   primary?: { usedPercent: number; resetAt?: number; windowMinutes?: number }
   secondary?: { usedPercent: number; resetAt?: number; windowMinutes?: number }
+  previousPrimaryUsedPercent?: number
+  previousSecondaryUsedPercent?: number
   source: string
   eventId: string
 }
@@ -116,13 +118,23 @@ export function formatCodexRateLimitRecord(record: CodexRateLimitRecord, format:
     ...(record.secondary ? [[record.secondary, codexRateLimitDurationLabel(record.secondary.windowMinutes)] as const] : []),
   ]
   if (format === 'json') {
-    const { primary: _primary, secondary: _secondary, ...metadata } = record
+    const {
+      primary: _primary, secondary: _secondary,
+      previousPrimaryUsedPercent: _previousPrimaryUsedPercent,
+      previousSecondaryUsedPercent: _previousSecondaryUsedPercent,
+      ...metadata
+    } = record
     return JSON.stringify({
       ...metadata,
       windows: Object.fromEntries(windows.map(([window, duration]) => [duration, window])),
     })
   }
-  const usage = `usage: ${windows.map(([window, duration]) => `${duration} = ${window.usedPercent}%`).join(' ')}`
+  const usage = `usage: ${windows.map(([window, duration]) => {
+    const previous = window === record.primary
+      ? record.previousPrimaryUsedPercent
+      : record.previousSecondaryUsedPercent
+    return `${duration} = ${previous === undefined ? '' : `${previous}% -> `}${window.usedPercent}%`
+  }).join(' ')}`
   const template = format === 'human' ? DEFAULT_HUMAN_FORMAT : format.replace(/^\+/, '')
   const sessionId = formatSessionId(record.source, record.sessionId ?? '-')
   const values: Record<string, string> = {
@@ -446,6 +458,8 @@ export function processCodexRateLimitLine(
   let secondary = readWindow(snapshot['secondary'])
   if (!primary && !secondary) return null
 
+  let previousPrimaryUsedPercent: number | undefined
+  let previousSecondaryUsedPercent: number | undefined
   const accountId = state.accountUpdateSeen ? state.accountId : state.fallbackAccountId
   const accountEmail = resolveCodexAccountEmail(state, accountId)
   const key = JSON.stringify([accountId, limitId])
@@ -453,6 +467,12 @@ export function processCodexRateLimitLine(
   if (previousSignature) {
     try {
       const previous = JSON.parse(previousSignature) as [unknown, unknown, unknown, CodexRateLimitRecord['primary'], CodexRateLimitRecord['secondary']]
+      if (previous[3] && primary && previous[3].usedPercent !== primary.usedPercent) {
+        previousPrimaryUsedPercent = previous[3].usedPercent
+      }
+      if (previous[4] && secondary && previous[4].usedPercent !== secondary.usedPercent) {
+        previousSecondaryUsedPercent = previous[4].usedPercent
+      }
       const suppressDownwardJitter = (
         previousWindow: CodexRateLimitRecord['primary'],
         currentWindow: CodexRateLimitRecord['primary'],
@@ -487,6 +507,7 @@ export function processCodexRateLimitLine(
   return {
     type: 'rate_limit_snapshot', timestamp, ordinal, sessionId: state.sessionId, accountId, accountEmail,
     limitId, limitName, primary, secondary,
+    previousPrimaryUsedPercent, previousSecondaryUsedPercent,
     source, eventId,
   }
 }
