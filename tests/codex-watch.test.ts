@@ -427,6 +427,32 @@ describe('Codex live usage processing', () => {
     expect(record?.model).toBe('gpt-5.6-luna')
   })
 
+  it('applies Fast pricing from the active rollout service tier and resets to standard', () => {
+    const state: CodexWatchState = { model: 'gpt-6-luna' }
+    const usage = { input_tokens: 600, cached_input_tokens: 400, output_tokens: 200, total_tokens: 1200 }
+    const standard = processCodexLine(state, usageRecord('resp-standard-before-fast', usage), '/rollout.jsonl')!
+
+    processCodexLine(state, JSON.stringify({
+      type: 'event_msg',
+      payload: { type: 'thread_settings_applied', thread_settings: { service_tier: 'priority' } },
+    }), '/rollout.jsonl')
+    const fast = processCodexLine(state, usageRecord('resp-fast', usage), '/rollout.jsonl')!
+
+    expect(fast.speed).toBe('fast')
+    expect(fast.costUsd).toBeCloseTo(standard.costUsd! * 2, 10)
+    expect(fast.credits).toBeCloseTo(standard.credits! * 2, 10)
+    expect(formatCodexUsageRecord(fast, 'mode=%v')).toBe('mode=fast')
+
+    processCodexLine(state, JSON.stringify({
+      type: 'event_msg',
+      payload: { type: 'thread_settings_applied', thread_settings: { service_tier: 'default' } },
+    }), '/rollout.jsonl')
+    const reset = processCodexLine(state, usageRecord('resp-standard-after-fast', usage), '/rollout.jsonl')!
+    expect(reset.speed).toBe('standard')
+    expect(reset.costUsd).toBe(standard.costUsd)
+    expect(reset.credits).toBe(standard.credits)
+  })
+
   it('keeps the latest model setting after later rollout records', () => {
     const state: CodexWatchState = { model: 'gpt-5.6-sol' }
     processCodexLine(state, JSON.stringify({
@@ -499,6 +525,7 @@ describe('Codex live usage processing', () => {
       sessionId: 'session-1',
       projectPath: '/work/project',
       model: 'gpt-5.6-luna',
+      speed: 'standard',
       inputTokens: 600,
       cachedInputTokens: 400,
       outputTokens: 200,

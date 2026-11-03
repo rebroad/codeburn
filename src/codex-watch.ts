@@ -23,6 +23,7 @@ export type CodexWatchState = {
   accountEmail?: string
   accountEmails?: Record<string, string>
   model?: string
+  serviceTier?: string
   modelAliases?: Record<string, string>
   sessionId?: string
   projectPath?: string
@@ -38,6 +39,7 @@ export type CodexUsageRecord = {
   sessionId: string | null
   projectPath: string | null
   model: string
+  speed: 'standard' | 'fast'
   inputTokens: number
   cachedInputTokens: number
   cacheWriteTokens?: number
@@ -286,8 +288,11 @@ function updateStateFromPayload(
   const sessionId = stringValue(payload['session_id'])
     ?? (entryType === 'session_meta' ? stringValue(payload['id']) : undefined)
   const projectPath = stringValue(payload['cwd'])
+  const threadSettings = payload['thread_settings'] as Record<string, unknown> | undefined
+  const serviceTier = stringValue(payload['service_tier']) ?? stringValue(threadSettings?.['service_tier'])
   if (sessionId) state.sessionId = sessionId
   if (projectPath) state.projectPath = projectPath
+  if (serviceTier) state.serviceTier = serviceTier
   if (updateModel) {
     const model = modelFromPayload(payload)
     if (model) state.model = model
@@ -358,6 +363,8 @@ export function processCodexLine(
     const accountId = stringValue(payload['account_id'])
       ?? (state.accountUpdateSeen ? state.accountId : state.fallbackAccountId)
     const accountEmail = resolveCodexAccountEmail(state, accountId)
+    const speed = state.serviceTier === 'priority' || state.serviceTier === 'fast' ? 'fast' : 'standard'
+    const pricingMultiplier = speed === 'fast' ? 2 : 1
     const creditRate = codexCreditRate(billingModel)
     const creditTokens = {
       inputTokens: normalizedInput,
@@ -366,7 +373,7 @@ export function processCodexLine(
       outputTokens,
       reasoningTokens,
     }
-    const costUsd = usage
+    const baseCostUsd = usage
       ? creditRate && (cacheWriteTokens === 0 || creditRate.cacheWrite !== null)
         ? codexCostUsd(billingModel, creditTokens)
         : creditRate
@@ -381,6 +388,7 @@ export function processCodexLine(
           )
           : null
       : null
+    const costUsd = baseCostUsd === null ? null : baseCostUsd * pricingMultiplier
     const eventId = responseId
       ? `codex:usage:${responseId}`
       : createHash('sha256').update(JSON.stringify([
@@ -394,6 +402,7 @@ export function processCodexLine(
       sessionId: state.sessionId ?? null,
       projectPath: state.projectPath ?? null,
       model: displayModel,
+      speed,
       inputTokens: normalizedInput,
       cachedInputTokens,
       cacheWriteTokens,
@@ -404,7 +413,7 @@ export function processCodexLine(
       // This is reconstructed consumption from the exact token usage and the
       // published per-model credit rate, not the account's balance.
       credits: usage && creditRate && (cacheWriteTokens === 0 || creditRate.cacheWrite !== null)
-        ? codexCredits(billingModel, creditTokens)
+        ? codexCredits(billingModel, creditTokens)! * pricingMultiplier
         : null,
       usageSource: 'token_usage_record',
       usageUnknown: !usage,
@@ -513,6 +522,7 @@ export function processCodexRateLimitLine(
 }
 
 const DEFAULT_HUMAN_FORMAT = '%t $%d i=%i ci=%c o=%o co=%w r=%r %m %s %a'
+const DEFAULT_USAGE_HUMAN_FORMAT = '%t $%d i=%i ci=%c o=%o co=%w r=%r %m mode=%v %s %a'
 
 export const CODEX_WATCH_FORMAT_HELP = `
 Watch output formats:
@@ -530,6 +540,7 @@ Watch output formats:
       %s session    %p project      %i input  %c cached input
       %w cache write %o output      %r reasoning output
       %d cost in USD %C credits     %f rollout source
+      %v speed (standard or fast)
       %% literal percent sign
 
   <format>
@@ -554,12 +565,13 @@ function displayValue(value: string | number | null): string {
 
 export function formatCodexUsageRecord(record: CodexUsageRecord, format: string): string {
   if (format === 'json') return JSON.stringify(record)
-  const template = format === 'human' ? DEFAULT_HUMAN_FORMAT : format.replace(/^\+/, '')
+  const template = format === 'human' ? DEFAULT_USAGE_HUMAN_FORMAT : format.replace(/^\+/, '')
   const values: Record<string, string | number | null> = {
     '%': '%',
     t: record.timestamp,
     l: record.loggedAt,
     m: record.model,
+    v: record.speed,
     s: record.sessionId ? formatSessionId(record.source, record.sessionId) : null,
     p: record.projectPath,
     i: record.inputTokens,
@@ -572,7 +584,7 @@ export function formatCodexUsageRecord(record: CodexUsageRecord, format: string)
     a: record.accountEmail ?? record.accountId,
     f: record.source,
   }
-  return template.replace(/%([%tlmspicowrdCaf])/g, (_match, key: string) => displayValue(values[key] ?? null))
+  return template.replace(/%([%tlmspicowrdCafv])/g, (_match, key: string) => displayValue(values[key] ?? null))
 }
 
 function resetFileState(state: CodexWatchFileState, file: { dev: number; ino: number }): void {
@@ -648,33 +660,40 @@ async function primeFile(filePath: string, state: CodexWatchFileState): Promise<
     let end = state.offset
     let suffix = ''
     let latestModel: string | undefined
-    while (end > 0 && !latestModel) {
+    let latestServiceTier: string | undefined
+    while (end > 0 && (!latestModel || !latestServiceTier)) {
       const start = Math.max(0, end - chunkSize)
       const chunk = Buffer.alloc(end - start)
       await handle.read(chunk, 0, chunk.length, start)
       const lines = (chunk.toString('utf8') + suffix).split('\n')
       suffix = start > 0 ? (lines.shift() ?? '') : ''
       for (let index = lines.length - 1; index >= 0; index -= 1) {
-        const model = parseModelLine(lines[index] ?? '')
-        if (model) {
-          latestModel = model
-          break
-        }
+        const context = parseContextLine(lines[index] ?? '')
+        if (!context) continue
+        if (!latestModel && context.model) latestModel = context.model
+        if (!latestServiceTier && context.serviceTier) latestServiceTier = context.serviceTier
+        if (latestModel && latestServiceTier) break
       }
       end = start
     }
     if (latestModel) state.usage.model = latestModel
+    if (latestServiceTier) state.usage.serviceTier = latestServiceTier
   } finally {
     await handle.close()
   }
 }
 
-function parseModelLine(line: string): string | undefined {
+function parseContextLine(line: string): { model?: string; serviceTier?: string } | undefined {
   if (!line) return undefined
   try {
     const entry = JSON.parse(line) as Record<string, unknown>
     const payload = entry['payload'] as Record<string, unknown> | undefined
-    return payload ? modelFromPayload(payload) : undefined
+    if (!payload) return undefined
+    const threadSettings = payload['thread_settings'] as Record<string, unknown> | undefined
+    return {
+      model: modelFromPayload(payload),
+      serviceTier: stringValue(payload['service_tier']) ?? stringValue(threadSettings?.['service_tier']),
+    }
   } catch {
     return undefined
   }
