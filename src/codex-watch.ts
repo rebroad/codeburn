@@ -691,18 +691,30 @@ async function primeFile(filePath: string, state: CodexWatchFileState): Promise<
     let suffix = ''
     let latestModel: string | undefined
     let latestServiceTier: string | undefined
-    while (end > 0 && (!latestModel || !latestServiceTier)) {
+    while (end > 0 && (!latestModel || !latestServiceTier || !state.usage.lastRateLimitSnapshot)) {
       const start = Math.max(0, end - chunkSize)
       const chunk = Buffer.alloc(end - start)
       await handle.read(chunk, 0, chunk.length, start)
       const lines = (chunk.toString('utf8') + suffix).split('\n')
       suffix = start > 0 ? (lines.shift() ?? '') : ''
       for (let index = lines.length - 1; index >= 0; index -= 1) {
-        const context = parseContextLine(lines[index] ?? '')
+        const line = lines[index] ?? ''
+        const context = parseContextLine(line)
         if (!context) continue
         if (!latestModel && context.model) latestModel = context.model
         if (!latestServiceTier && context.serviceTier) latestServiceTier = context.serviceTier
-        if (latestModel && latestServiceTier) break
+        if (!state.usage.lastRateLimitSnapshot) {
+          try {
+            const entry = JSON.parse(line) as Record<string, unknown>
+            const payload = entry['payload'] as Record<string, unknown> | undefined
+            if (entry['type'] === 'event_msg' && payload?.['type'] === 'token_count') {
+              processCodexRateLimitLine(state.usage, line, filePath)
+            }
+          } catch {
+            // Ignore malformed lines while priming the latest usage window.
+          }
+        }
+        if (latestModel && latestServiceTier && state.usage.lastRateLimitSnapshot) break
       }
       end = start
     }
