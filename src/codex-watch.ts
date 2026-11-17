@@ -31,6 +31,12 @@ export type CodexWatchState = {
   lastSignature?: string
   usageRecordIds?: Set<string>
   lastRateLimitSignature?: string
+  lastRateLimitSnapshot?: {
+    limitId?: string
+    limitName?: string
+    primary?: CodexRateLimitRecord['primary']
+    secondary?: CodexRateLimitRecord['secondary']
+  }
 }
 
 export type CodexUsageRecord = {
@@ -447,6 +453,29 @@ export function processCodexRateLimitLine(
   }
   if (entry['type'] !== 'event_msg') return null
   const payload = entry['payload'] as Record<string, unknown> | undefined
+  if (payload?.['type'] === 'task_complete'
+    && (payload['error'] as Record<string, unknown> | undefined)?.['codex_error_info'] === 'usage_limit_exceeded') {
+    const previous = state.lastRateLimitSnapshot
+    const primary = previous?.primary
+    const secondary = previous?.secondary
+    const selected = primary && secondary
+      ? (primary.usedPercent >= secondary.usedPercent ? 'primary' : 'secondary')
+      : primary ? 'primary' : secondary ? 'secondary' : 'primary'
+    return {
+      type: 'rate_limit_snapshot',
+      timestamp: stringValue(entry['timestamp']) ?? new Date().toISOString(),
+      ordinal: Number.isSafeInteger(entry['ordinal']) ? entry['ordinal'] as number : undefined,
+      sessionId: state.sessionId,
+      accountId: state.accountUpdateSeen ? state.accountId : state.fallbackAccountId,
+      accountEmail: resolveCodexAccountEmail(state, state.accountUpdateSeen ? state.accountId : state.fallbackAccountId),
+      limitId: previous?.limitId,
+      limitName: previous?.limitName,
+      primary: selected === 'primary' ? { ...(primary ?? {}), usedPercent: 101 } : primary,
+      secondary: selected === 'secondary' ? { ...(secondary ?? {}), usedPercent: 101 } : secondary,
+      source,
+      eventId: createHash('sha256').update(`codex-usage-limit-hit\0${source}\0${entry['timestamp'] ?? ''}\0${payload['turn_id'] ?? ''}`).digest('hex'),
+    }
+  }
   if (payload?.['type'] !== 'token_count') return null
   const snapshot = payload['rate_limits'] as Record<string, unknown> | undefined
   if (!snapshot) return null
@@ -502,6 +531,7 @@ export function processCodexRateLimitLine(
     }
   }
   const signature = JSON.stringify([accountId, limitId, limitName, primary, secondary])
+  state.lastRateLimitSnapshot = { limitId, limitName, primary, secondary }
   if (seenRateLimits) {
     if (previousSignature === signature) return null
     seenRateLimits.set(key, signature)
