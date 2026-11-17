@@ -683,9 +683,9 @@ async function primeFile(filePath: string, state: CodexWatchFileState): Promise<
       primeLine(state.usage, line)
     }
 
-    // The newest model setting may be far older than the end of a large
-    // rollout. Scan backwards until the first model-bearing record, which is
-    // the latest model change, without loading the whole file.
+    // The newest model setting and rate-limit snapshot may be far older than
+    // the end of a large rollout. Scan backwards for each without loading the
+    // whole file.
     const chunkSize = 1024 * 1024
     let end = state.offset
     let suffix = ''
