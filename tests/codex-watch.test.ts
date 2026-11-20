@@ -88,6 +88,26 @@ function routedUsageRecord(responseId: string, model: string): string {
 }
 
 describe('Codex live usage processing', () => {
+  it('reuses an explicit usage record account ID for following quota snapshots', () => {
+    const quotaLine = JSON.stringify({
+      type: 'event_msg', timestamp: '2026-11-20T13:39:30.378Z', ordinal: 149,
+      payload: { type: 'token_count', rate_limits: {
+        limit_id: 'codex',
+        primary: { used_percent: 29, window_minutes: 300, resets_at: 1_795_191_994 },
+        secondary: { used_percent: 87, window_minutes: 10080, resets_at: 1_795_557_736 },
+      } },
+    })
+    const first = { accountId: 'account-one', accountUpdateSeen: true, accountEmails: { 'account-one': 'one@example.test' } }
+    const second = { accountEmails: { 'account-one': 'one@example.test' } }
+    const seenRateLimits = new Map<string, string>()
+
+    expect(processCodexRateLimitLine(first, quotaLine, '/first.jsonl', seenRateLimits)?.accountEmail)
+      .toBe('one@example.test')
+    expect(processCodexLine(second, usageRecord('response-explicit-account'))?.accountEmail).toBe('one@example.test')
+    expect(second).toMatchObject({ accountUpdateSeen: true, accountId: 'account-one' })
+    expect(processCodexRateLimitLine(second, quotaLine, '/second.jsonl', seenRateLimits)).toBeNull()
+  })
+
   it('primes account identity from existing rollout tails for cross-rollout quota deduplication', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'codeburn-prime-account-'))
     const quotaLine = JSON.stringify({

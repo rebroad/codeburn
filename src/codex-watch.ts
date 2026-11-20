@@ -368,8 +368,12 @@ export function processCodexLine(
     const displayModel = observedModel?.toLowerCase() === 'codex-auto-review'
       ? 'auto-review'
       : billingModel
-    const accountId = stringValue(payload['account_id'])
-      ?? (state.accountUpdateSeen ? state.accountId : undefined)
+    const recordAccountId = stringValue(payload['account_id'])
+    if (recordAccountId) {
+      state.accountUpdateSeen = true
+      state.accountId = recordAccountId
+    }
+    const accountId = recordAccountId ?? (state.accountUpdateSeen ? state.accountId : undefined)
     const accountEmail = resolveCodexAccountEmail(state, accountId)
     const speed = state.serviceTier === 'priority' || state.serviceTier === 'fast' ? 'fast' : 'standard'
     const pricingMultiplier = speed === 'fast' ? 2 : 1
@@ -692,8 +696,8 @@ export async function primeCodexWatchFile(filePath: string, state: CodexWatchFil
     let suffix = ''
     let latestModel: string | undefined
     let latestServiceTier: string | undefined
-    let latestAccountUpdateSeen = false
-    while (end > 0 && (!latestModel || !latestServiceTier || !state.usage.lastRateLimitSnapshot || !latestAccountUpdateSeen)) {
+    let latestAccountIdentitySeen = false
+    while (end > 0 && (!latestModel || !latestServiceTier || !state.usage.lastRateLimitSnapshot || !latestAccountIdentitySeen)) {
       const start = Math.max(0, end - chunkSize)
       const chunk = Buffer.alloc(end - start)
       await handle.read(chunk, 0, chunk.length, start)
@@ -701,14 +705,18 @@ export async function primeCodexWatchFile(filePath: string, state: CodexWatchFil
       suffix = start > 0 ? (lines.shift() ?? '') : ''
       for (let index = lines.length - 1; index >= 0; index -= 1) {
         const line = lines[index] ?? ''
-        if (!latestAccountUpdateSeen) {
+        if (!latestAccountIdentitySeen) {
           try {
             const entry = JSON.parse(line) as Record<string, unknown>
             const payload = entry['payload'] as Record<string, unknown> | undefined
             if (entry['type'] === 'event_msg' && payload?.['type'] === 'account_updated') {
               state.usage.accountUpdateSeen = true
               state.usage.accountId = stringValue(payload['account_id'])
-              latestAccountUpdateSeen = true
+              latestAccountIdentitySeen = true
+            } else if (entry['type'] === 'token_usage_record' && stringValue(payload?.['account_id'])) {
+              state.usage.accountUpdateSeen = true
+              state.usage.accountId = stringValue(payload['account_id'])
+              latestAccountIdentitySeen = true
             }
           } catch {
             // Ignore malformed lines while priming the latest account identity.
@@ -730,7 +738,7 @@ export async function primeCodexWatchFile(filePath: string, state: CodexWatchFil
             // Ignore malformed lines while priming the latest usage window.
           }
         }
-        if (latestModel && latestServiceTier && state.usage.lastRateLimitSnapshot && latestAccountUpdateSeen) break
+        if (latestModel && latestServiceTier && state.usage.lastRateLimitSnapshot && latestAccountIdentitySeen) break
       }
       end = start
     }
