@@ -12,6 +12,7 @@ import {
   loadCodexAccountInfo,
   processCodexLine,
   processCodexRateLimitLine,
+  primeCodexWatchFile,
   readAppended,
   type CodexWatchFileState,
   type CodexWatchState,
@@ -87,6 +88,43 @@ function routedUsageRecord(responseId: string, model: string): string {
 }
 
 describe('Codex live usage processing', () => {
+  it('primes account identity from existing rollout tails for cross-rollout quota deduplication', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'codeburn-prime-account-'))
+    const quotaLine = JSON.stringify({
+      type: 'event_msg', timestamp: '2026-11-20T13:39:30.378Z', ordinal: 149,
+      payload: { type: 'token_count', rate_limits: {
+        limit_id: 'codex',
+        primary: { used_percent: 29, window_minutes: 300, resets_at: 1_795_191_994 },
+        secondary: { used_percent: 87, window_minutes: 10080, resets_at: 1_795_557_736 },
+      } },
+    })
+    const accountUpdate = JSON.stringify({
+      type: 'event_msg', payload: { type: 'account_updated', account_id: 'account-one' },
+    })
+    const states: CodexWatchFileState[] = []
+    for (const [index, sessionId] of ['session-one', 'session-two'].entries()) {
+      const path = join(directory, `${index}.jsonl`)
+      await writeFile(path, `${JSON.stringify({ type: 'session_meta', payload: { session_id: sessionId } })}\n${accountUpdate}\n`, 'utf8')
+      const file = await stat(path)
+      const state: CodexWatchFileState = {
+        offset: file.size,
+        pending: '',
+        decoder: new StringDecoder('utf8'),
+        device: file.dev,
+        inode: file.ino,
+        discardingOversizeLine: false,
+        usage: {},
+      }
+      await primeCodexWatchFile(path, state)
+      expect(state.usage).toMatchObject({ accountUpdateSeen: true, accountId: 'account-one' })
+      states.push(state)
+    }
+
+    const seenRateLimits = new Map<string, string>()
+    expect(processCodexRateLimitLine(states[0]!.usage, quotaLine, '/first.jsonl', seenRateLimits)).not.toBeNull()
+    expect(processCodexRateLimitLine(states[1]!.usage, quotaLine, '/second.jsonl', seenRateLimits)).toBeNull()
+  })
+
   it('builds account-isolated UTC daily ledger shard paths', () => {
     expect(codexLedgerShardPath('/ledger', 'account-one', new Date('2026-08-04T23:30:00-04:00')))
       .toBe('/ledger/fee4c3fef903ecc2a3b6cc4dd8fd8a5bb674a29d8135490449d1bc2dd8480b71-2026-08-05.jsonl')
