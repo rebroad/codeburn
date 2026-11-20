@@ -19,8 +19,6 @@ type TokenUsage = {
 export type CodexWatchState = {
   accountId?: string
   accountUpdateSeen?: boolean
-  fallbackAccountId?: string
-  accountEmail?: string
   accountEmails?: Record<string, string>
   model?: string
   serviceTier?: string
@@ -205,8 +203,6 @@ function stringValue(value: unknown): string | undefined {
 function resolveCodexAccountEmail(state: CodexWatchState, accountId: string | undefined): string | undefined {
   if (!accountId) return undefined
   return state.accountEmails?.[accountId]
-    ?? (accountId === state.accountId ? state.accountEmail : undefined)
-    ?? (!state.accountUpdateSeen ? state.accountEmails?.[state.fallbackAccountId ?? ''] : undefined)
 }
 
 function decodeJwtPayload(token: string): Record<string, unknown> | undefined {
@@ -221,31 +217,40 @@ function decodeJwtPayload(token: string): Record<string, unknown> | undefined {
   }
 }
 
-export async function loadCodexAccountInfo(): Promise<{ emails: Record<string, string>; activeAccountId?: string }> {
+export async function loadCodexAccountInfo(): Promise<{ emails: Record<string, string> }> {
+  const home = codexHome()
+  const paths = [join(home, 'auth.json')]
   try {
-    const auth = JSON.parse(await readFile(join(codexHome(), 'auth.json'), 'utf8')) as Record<string, unknown>
-    const tokens = auth['tokens'] as Record<string, unknown> | undefined
-    if (!tokens) return { emails: {} }
-    const tokenPayloads = Object.values(tokens)
-      .filter((token): token is string => typeof token === 'string')
-      .map(decodeJwtPayload)
-      .filter((payload): payload is Record<string, unknown> => payload !== undefined)
-    const result: Record<string, string> = {}
-    const tokenAccountId = stringValue(tokens['account_id'])
-    let fallbackEmail: string | undefined
-    for (const payload of tokenPayloads) {
-      const authClaims = payload['https://api.openai.com/auth'] as Record<string, unknown> | undefined
-      const profileClaims = payload['https://api.openai.com/profile'] as Record<string, unknown> | undefined
-      const accountId = stringValue(authClaims?.['chatgpt_account_id'])
-      const email = stringValue(profileClaims?.['email']) ?? stringValue(payload['email'])
-      if (accountId && email) result[accountId] = email
-      if (email) fallbackEmail = email
-    }
-    if (tokenAccountId && fallbackEmail) result[tokenAccountId] = fallbackEmail
-    return { emails: result, activeAccountId: tokenAccountId }
+    paths.push(...(await readdir(join(home, 'auth.json.d'))).map(name => join(home, 'auth.json.d', name)))
   } catch {
-    return { emails: {} }
+    // auth.json.d is optional.
   }
+  const result: Record<string, string> = {}
+  for (const path of paths) {
+    try {
+      const auth = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>
+      const tokens = auth['tokens'] as Record<string, unknown> | undefined
+      if (!tokens) continue
+      const tokenPayloads = Object.values(tokens)
+        .filter((token): token is string => typeof token === 'string')
+        .map(decodeJwtPayload)
+        .filter((payload): payload is Record<string, unknown> => payload !== undefined)
+      const tokenAccountId = stringValue(tokens['account_id'])
+      let authFileEmail: string | undefined
+      for (const payload of tokenPayloads) {
+        const authClaims = payload['https://api.openai.com/auth'] as Record<string, unknown> | undefined
+        const profileClaims = payload['https://api.openai.com/profile'] as Record<string, unknown> | undefined
+        const accountId = stringValue(authClaims?.['chatgpt_account_id'])
+        const email = stringValue(profileClaims?.['email']) ?? stringValue(payload['email'])
+        if (accountId && email) result[accountId] = email
+        if (email) authFileEmail = email
+      }
+      if (tokenAccountId && authFileEmail) result[tokenAccountId] = authFileEmail
+    } catch {
+      // Ignore missing, unreadable, or malformed auth files independently.
+    }
+  }
+  return { emails: result }
 }
 
 function catalogModelName(displayName: string): string | undefined {
@@ -340,9 +345,6 @@ export function processCodexLine(
   if (entry['type'] === 'event_msg' && payload['type'] === 'account_updated') {
     state.accountUpdateSeen = true
     state.accountId = stringValue(payload['account_id'])
-    state.accountEmail = state.accountId
-      ? state.accountEmails?.[state.accountId] ?? state.accountEmails?.[state.fallbackAccountId ?? '']
-      : undefined
     return null
   }
 
@@ -367,7 +369,7 @@ export function processCodexLine(
       ? 'auto-review'
       : billingModel
     const accountId = stringValue(payload['account_id'])
-      ?? (state.accountUpdateSeen ? state.accountId : state.fallbackAccountId)
+      ?? (state.accountUpdateSeen ? state.accountId : undefined)
     const accountEmail = resolveCodexAccountEmail(state, accountId)
     const speed = state.serviceTier === 'priority' || state.serviceTier === 'fast' ? 'fast' : 'standard'
     const pricingMultiplier = speed === 'fast' ? 2 : 1
@@ -466,8 +468,8 @@ export function processCodexRateLimitLine(
       timestamp: stringValue(entry['timestamp']) ?? new Date().toISOString(),
       ordinal: Number.isSafeInteger(entry['ordinal']) ? entry['ordinal'] as number : undefined,
       sessionId: state.sessionId,
-      accountId: state.accountUpdateSeen ? state.accountId : state.fallbackAccountId,
-      accountEmail: resolveCodexAccountEmail(state, state.accountUpdateSeen ? state.accountId : state.fallbackAccountId),
+      accountId: state.accountUpdateSeen ? state.accountId : undefined,
+      accountEmail: resolveCodexAccountEmail(state, state.accountUpdateSeen ? state.accountId : undefined),
       limitId: previous?.limitId,
       limitName: previous?.limitName,
       primary: selected === 'primary' ? { ...(primary ?? {}), usedPercent: 101 } : primary,
@@ -498,7 +500,7 @@ export function processCodexRateLimitLine(
 
   let previousPrimaryUsedPercent: number | undefined
   let previousSecondaryUsedPercent: number | undefined
-  const accountId = state.accountUpdateSeen ? state.accountId : state.fallbackAccountId
+  const accountId = state.accountUpdateSeen ? state.accountId : undefined
   const accountEmail = resolveCodexAccountEmail(state, accountId)
   const key = JSON.stringify([accountId, limitId])
   const previousSignature = seenRateLimits?.get(key) ?? state.lastRateLimitSignature
@@ -581,11 +583,10 @@ For quota updates, %t, %s, and %a keep their formatted values. The first
 other format field is replaced by the quota usage, and later non-ordinal fields
 and their labels are omitted.
 
-The account value is the email associated with the backend account used by the
-model request. When its ID has no email mapping, the current auth.json email is
-shown as a best-effort display fallback; the stable ID remains available in
-JSON and for attribution. The fallback may not identify the credential used
-for that request. '-' is shown when no account can be resolved.\n`
+The account value is the email associated with the backend account ID recorded
+in the rollout. CodeBurn looks up that ID in ~/.codex/auth.json and
+~/.codex/auth.json.d. It does not substitute an email when the ID is unknown
+or absent. '-' is shown when no matching account can be resolved.\n`
 
 function displayValue(value: string | number | null): string {
   if (value === null) return '-'
@@ -879,7 +880,7 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
           device: file.dev,
           inode: file.ino,
           discardingOversizeLine: false,
-          usage: { accountEmails: accountInfo.emails, fallbackAccountId: accountInfo.activeAccountId, modelAliases } as CodexWatchState,
+          usage: { accountEmails: accountInfo.emails, modelAliases } as CodexWatchState,
         }
         await primeFile(path, state)
         files.set(path, state)
@@ -899,28 +900,11 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
         device: file.dev,
         inode: file.ino,
         discardingOversizeLine: false,
-        usage: { accountEmails: accountInfo.emails, fallbackAccountId: accountInfo.activeAccountId, modelAliases } as CodexWatchState,
+        usage: { accountEmails: accountInfo.emails, modelAliases } as CodexWatchState,
       }
       files.set(path, state)
     }
     await readAppended(path, state, async (line) => {
-        // Older rollouts may have no account metadata. Refresh auth only for
-        // usage records that need the inferred fallback, so account switches
-        // are reflected without adding a file read to every rollout event.
-        try {
-          const entry = JSON.parse(line) as Record<string, unknown>
-          const payload = entry['payload'] as Record<string, unknown> | undefined
-          const accountId = stringValue(payload?.['account_id'])
-          const needsFallbackAccount = !accountId && !state.usage.accountUpdateSeen
-          const needsAccountEmail = !!accountId && !state.usage.accountEmails?.[accountId]
-          if (entry['type'] === 'token_usage_record' && (needsFallbackAccount || needsAccountEmail)) {
-            const accountInfo = await loadCodexAccountInfo()
-            state.usage.accountEmails = accountInfo.emails
-            state.usage.fallbackAccountId = accountInfo.activeAccountId
-          }
-        } catch {
-          // processCodexLine handles malformed records as ignored input.
-        }
         const record = processCodexLine(state.usage, line, path)
         if (record) {
           await appendLedgerEvent(record.accountId, {

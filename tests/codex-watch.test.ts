@@ -1,4 +1,4 @@
-import { mkdtemp, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
@@ -166,26 +166,26 @@ describe('Codex live usage processing', () => {
     expect(processCodexRateLimitLine(jitterAccount, quotaLine(85, 7), '/weekly-jitter.jsonl', weeklyJitterState)).toBeNull()
   })
 
-  it('uses auth fallback only when the rollout has no account signal', () => {
-    const state: CodexWatchState = { fallbackAccountId: 'auth-account', accountEmails: { 'auth-account': 'auth@example.test' } }
+  it('does not infer an account when the rollout has no account signal', () => {
+    const state: CodexWatchState = { accountEmails: { 'auth-account': 'auth@example.test' } }
     const inferred = processCodexLine(state, usageWithoutAccount('resp-inferred', { input_tokens: 100, output_tokens: 20 }), '/rollout.jsonl')
-    expect(inferred).toMatchObject({ accountId: 'auth-account', accountEmail: 'auth@example.test' })
+    expect(inferred?.accountId).toBeUndefined()
+    expect(inferred?.accountEmail).toBeUndefined()
 
     const explicit = processCodexLine(state, usageRecord('resp-explicit', { input_tokens: 100, output_tokens: 20 }), '/rollout.jsonl')
     expect(explicit?.accountId).toBe('account-one')
   })
 
   it('uses the latest account update and treats an explicit null as authoritative', () => {
-    const state: CodexWatchState = { fallbackAccountId: 'auth-account' }
+    const state: CodexWatchState = {}
     processCodexLine(state, JSON.stringify({ type: 'event_msg', payload: { type: 'account_updated', account_id: 'rollout-account' } }), '/rollout.jsonl')
     expect(processCodexLine(state, usageWithoutAccount('resp-updated', { input_tokens: 1 }), '/rollout.jsonl')?.accountId).toBe('rollout-account')
     processCodexLine(state, JSON.stringify({ type: 'event_msg', payload: { type: 'account_updated', account_id: null } }), '/rollout.jsonl')
     expect(processCodexLine(state, usageWithoutAccount('resp-null', { input_tokens: 1 }), '/rollout.jsonl')?.accountId).toBeUndefined()
   })
 
-  it('shows the active auth email for an account ID without a direct email mapping', () => {
+  it('does not show an unrelated auth email for an account ID without a mapping', () => {
     const state: CodexWatchState = {
-      fallbackAccountId: 'auth-account',
       accountEmails: { 'auth-account': 'auth@example.test' },
     }
     processCodexLine(state, JSON.stringify({
@@ -193,20 +193,33 @@ describe('Codex live usage processing', () => {
     }), '/rollout.jsonl')
 
     const usage = processCodexLine(state, usageWithoutAccount('resp-unknown-account', { input_tokens: 1 }), '/rollout.jsonl')
-    expect(usage).toMatchObject({ accountId: 'rollout-account', accountEmail: 'auth@example.test' })
-    expect(formatCodexUsageRecord(usage!, 'account=%a')).toBe('account=auth@example.test')
+    expect(usage).toMatchObject({ accountId: 'rollout-account' })
+    expect(usage?.accountEmail).toBeUndefined()
+    expect(formatCodexUsageRecord(usage!, 'account=%a')).toBe('account=rollout-account')
 
     const quota = processCodexRateLimitLine(state, JSON.stringify({
       type: 'event_msg', payload: { type: 'token_count', rate_limits: {
         limit_id: 'codex', primary: { used_percent: 10, window_minutes: 300 },
       } },
     }), '/rollout.jsonl')
-    expect(quota?.accountEmail).toBe('auth@example.test')
-    expect(formatCodexRateLimitRecord(quota!, 'account=%a')).toContain('account=auth@example.test')
+    expect(quota?.accountEmail).toBeUndefined()
+    expect(formatCodexRateLimitRecord(quota!, 'account=%a')).toContain('account=rollout-account')
   })
 
-  it('reads the current auth account and tolerates missing or malformed auth files', async () => {
+  it('shows an auth email only when its account ID matches the rollout ID', () => {
+    const state: CodexWatchState = {
+      accountEmails: { 'rollout-account': 'rollout@example.test', 'other-account': 'other@example.test' },
+    }
+    // An explicit per-response account ID is the authoritative lookup key.
+    const explicit = processCodexLine(state, usageRecord('resp-exact', { input_tokens: 1 }).replace(
+      '"account_id":"account-one"', '"account_id":"rollout-account"',
+    ), '/rollout.jsonl')
+    expect(explicit).toMatchObject({ accountId: 'rollout-account', accountEmail: 'rollout@example.test' })
+  })
+
+  it('maps auth emails by account ID from the default and auth.json.d files', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'codeburn-auth-'))
+    await mkdir(join(directory, 'auth.json.d'))
     const previousHome = process.env['CODEX_HOME']
     process.env['CODEX_HOME'] = directory
     try {
@@ -215,17 +228,25 @@ describe('Codex live usage processing', () => {
       expect(await loadCodexAccountInfo()).toMatchObject({ emails: {} })
       const jwt = `x.${Buffer.from(JSON.stringify({ 'https://api.openai.com/profile': { email: 'active@example.test' } })).toString('base64url')}.x`
       await writeFile(join(directory, 'auth.json'), JSON.stringify({ tokens: { account_id: 'active-account', access_token: jwt } }), 'utf8')
-      expect(await loadCodexAccountInfo()).toEqual({
-        activeAccountId: 'active-account',
-        emails: { 'active-account': 'active@example.test' },
-      })
+      expect(await loadCodexAccountInfo()).toEqual({ emails: { 'active-account': 'active@example.test' } })
+      const secondJwt = `x.${Buffer.from(JSON.stringify({
+        'https://api.openai.com/auth': { chatgpt_account_id: 'rollout-account' },
+        'https://api.openai.com/profile': { email: 'rollout@example.test' },
+      })).toString('base64url')}.x`
+      await writeFile(join(directory, 'auth.json.d', 'selected-auth'), JSON.stringify({
+        tokens: { account_id: 'rollout-account', access_token: secondJwt },
+      }), 'utf8')
+      expect(await loadCodexAccountInfo()).toEqual({ emails: {
+        'active-account': 'active@example.test',
+        'rollout-account': 'rollout@example.test',
+      } })
     } finally {
       if (previousHome === undefined) delete process.env['CODEX_HOME']
       else process.env['CODEX_HOME'] = previousHome
     }
   })
 
-  it('refreshes the inferred account between usage records', async () => {
+  it('does not infer an account from whichever auth file is currently active', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'codeburn-auth-switch-'))
     const previousHome = process.env['CODEX_HOME']
     process.env['CODEX_HOME'] = directory
@@ -236,18 +257,15 @@ describe('Codex live usage processing', () => {
     try {
       const state: CodexWatchState = {}
       await writeFile(join(directory, 'auth.json'), auth('first-account', 'first@example.test'), 'utf8')
-      const first = await loadCodexAccountInfo()
-      state.fallbackAccountId = first.activeAccountId
-      state.accountEmails = first.emails
+      state.accountEmails = (await loadCodexAccountInfo()).emails
       expect(processCodexLine(state, usageWithoutAccount('resp-first-account', { input_tokens: 1 }), '/rollout.jsonl')?.accountId)
-        .toBe('first-account')
+        .toBeUndefined()
 
       await writeFile(join(directory, 'auth.json'), auth('second-account', 'second@example.test'), 'utf8')
       const current = await loadCodexAccountInfo()
-      state.fallbackAccountId = current.activeAccountId
       state.accountEmails = current.emails
       expect(processCodexLine(state, usageWithoutAccount('resp-second-account', { input_tokens: 1 }), '/rollout.jsonl'))
-        .toMatchObject({ accountId: 'second-account', accountEmail: 'second@example.test' })
+        .toMatchObject({ accountEmail: undefined })
     } finally {
       if (previousHome === undefined) delete process.env['CODEX_HOME']
       else process.env['CODEX_HOME'] = previousHome
