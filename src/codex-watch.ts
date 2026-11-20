@@ -676,7 +676,7 @@ export async function readAppended(
   }
 }
 
-export async function primeCodexWatchFile(filePath: string, state: CodexWatchFileState): Promise<void> {
+async function primeFile(filePath: string, state: CodexWatchFileState): Promise<void> {
   if (state.offset === 0) return
   const handle = await open(filePath, 'r').catch(() => null)
   if (!handle) return
@@ -696,8 +696,7 @@ export async function primeCodexWatchFile(filePath: string, state: CodexWatchFil
     let suffix = ''
     let latestModel: string | undefined
     let latestServiceTier: string | undefined
-    let latestAccountIdentitySeen = false
-    while (end > 0 && (!latestModel || !latestServiceTier || !state.usage.lastRateLimitSnapshot || !latestAccountIdentitySeen)) {
+    while (end > 0 && (!latestModel || !latestServiceTier || !state.usage.lastRateLimitSnapshot)) {
       const start = Math.max(0, end - chunkSize)
       const chunk = Buffer.alloc(end - start)
       await handle.read(chunk, 0, chunk.length, start)
@@ -705,28 +704,10 @@ export async function primeCodexWatchFile(filePath: string, state: CodexWatchFil
       suffix = start > 0 ? (lines.shift() ?? '') : ''
       for (let index = lines.length - 1; index >= 0; index -= 1) {
         const line = lines[index] ?? ''
-        if (!latestAccountIdentitySeen) {
-          try {
-            const entry = JSON.parse(line) as Record<string, unknown>
-            const payload = entry['payload'] as Record<string, unknown> | undefined
-            if (entry['type'] === 'event_msg' && payload?.['type'] === 'account_updated') {
-              state.usage.accountUpdateSeen = true
-              state.usage.accountId = stringValue(payload['account_id'])
-              latestAccountIdentitySeen = true
-            } else if (entry['type'] === 'token_usage_record' && stringValue(payload?.['account_id'])) {
-              state.usage.accountUpdateSeen = true
-              state.usage.accountId = stringValue(payload['account_id'])
-              latestAccountIdentitySeen = true
-            }
-          } catch {
-            // Ignore malformed lines while priming the latest account identity.
-          }
-        }
         const context = parseContextLine(line)
-        if (context) {
-          if (!latestModel && context.model) latestModel = context.model
-          if (!latestServiceTier && context.serviceTier) latestServiceTier = context.serviceTier
-        }
+        if (!context) continue
+        if (!latestModel && context.model) latestModel = context.model
+        if (!latestServiceTier && context.serviceTier) latestServiceTier = context.serviceTier
         if (!state.usage.lastRateLimitSnapshot) {
           try {
             const entry = JSON.parse(line) as Record<string, unknown>
@@ -738,7 +719,7 @@ export async function primeCodexWatchFile(filePath: string, state: CodexWatchFil
             // Ignore malformed lines while priming the latest usage window.
           }
         }
-        if (latestModel && latestServiceTier && state.usage.lastRateLimitSnapshot && latestAccountIdentitySeen) break
+        if (latestModel && latestServiceTier && state.usage.lastRateLimitSnapshot) break
       }
       end = start
     }
@@ -905,7 +886,7 @@ export async function runCodexWatch(options: CodexWatchOptions = {}): Promise<vo
           discardingOversizeLine: false,
           usage: { accountEmails: accountInfo.emails, modelAliases } as CodexWatchState,
         }
-        await primeCodexWatchFile(path, state)
+        await primeFile(path, state)
         files.set(path, state)
       }
     }
