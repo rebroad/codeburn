@@ -186,6 +186,45 @@ describe('Codex live usage processing', () => {
     expect(processCodexRateLimitLine(jitterAccount, quotaLine(85, 7), '/weekly-jitter.jsonl', weeklyJitterState)).toBeNull()
   })
 
+  it('treats a usage-limit event as the 101% baseline and suppresses later stale snapshots', () => {
+    const state: CodexWatchState = {
+      accountId: 'account-one', accountUpdateSeen: true, sessionId: 'session-1',
+    }
+    const seenRateLimits = new Map<string, string>()
+    const quotaLine = (usedPercent: number, timestamp: string) => JSON.stringify({
+      type: 'event_msg', timestamp, payload: { type: 'token_count', rate_limits: {
+        limit_id: 'codex', limit_name: 'Codex',
+        primary: { used_percent: 20, window_minutes: 300 },
+        secondary: { used_percent: usedPercent, window_minutes: 43200 },
+      } },
+    })
+    const initial = processCodexRateLimitLine(
+      state, quotaLine(99, '2026-11-21T00:19:00.000Z'), '/rollout.jsonl', seenRateLimits,
+    )
+    expect(initial?.secondary?.usedPercent).toBe(99)
+
+    const limitHit = processCodexRateLimitLine(state, JSON.stringify({
+      type: 'event_msg', timestamp: '2026-11-21T00:21:24.708Z', ordinal: 496240,
+      payload: { type: 'task_complete', turn_id: 'turn-1', error: {
+        codex_error_info: 'usage_limit_exceeded',
+      } },
+    }), '/rollout.jsonl', seenRateLimits)
+    expect(limitHit).toMatchObject({
+      previousSecondaryUsedPercent: 99,
+      secondary: { usedPercent: 101, windowMinutes: 43200 },
+    })
+    expect(formatCodexRateLimitRecord(limitHit!, 'human')).toContain('monthly = 99% -> 101%')
+    expect(processCodexRateLimitLine(
+      state, quotaLine(100, '2026-11-21T00:21:24.849Z'), '/rollout.jsonl', seenRateLimits,
+    )).toBeNull()
+    expect(processCodexRateLimitLine(state, JSON.stringify({
+      type: 'event_msg', timestamp: '2026-11-21T00:21:26.074Z', ordinal: 496241,
+      payload: { type: 'task_complete', turn_id: 'turn-1', error: {
+        codex_error_info: 'usage_limit_exceeded',
+      } },
+    }), '/rollout.jsonl', seenRateLimits)).toBeNull()
+  })
+
   it('does not infer an account when the rollout has no account signal', () => {
     const state: CodexWatchState = { accountEmails: { 'auth-account': 'auth@example.test' } }
     const inferred = processCodexLine(state, usageWithoutAccount('resp-inferred', { input_tokens: 100, output_tokens: 20 }), '/rollout.jsonl')

@@ -467,6 +467,18 @@ export function processCodexRateLimitLine(
     const selected = primary && secondary
       ? (primary.usedPercent >= secondary.usedPercent ? 'primary' : 'secondary')
       : primary ? 'primary' : secondary ? 'secondary' : 'primary'
+    const selectedWindow = selected === 'primary' ? primary : secondary
+    if (selectedWindow && selectedWindow.usedPercent >= 101) return null
+    const nextPrimary = selected === 'primary' ? { ...(primary ?? {}), usedPercent: 101 } : primary
+    const nextSecondary = selected === 'secondary' ? { ...(secondary ?? {}), usedPercent: 101 } : secondary
+    const accountId = state.accountUpdateSeen ? state.accountId : undefined
+    const limitId = previous?.limitId
+    const limitName = previous?.limitName
+    const signature = JSON.stringify([accountId, limitId, limitName, nextPrimary, nextSecondary])
+    const key = JSON.stringify([accountId, limitId])
+    state.lastRateLimitSnapshot = { limitId, limitName, primary: nextPrimary, secondary: nextSecondary }
+    state.lastRateLimitSignature = signature
+    seenRateLimits?.set(key, signature)
     return {
       type: 'rate_limit_snapshot',
       timestamp: stringValue(entry['timestamp']) ?? new Date().toISOString(),
@@ -476,8 +488,10 @@ export function processCodexRateLimitLine(
       accountEmail: resolveCodexAccountEmail(state, state.accountUpdateSeen ? state.accountId : undefined),
       limitId: previous?.limitId,
       limitName: previous?.limitName,
-      primary: selected === 'primary' ? { ...(primary ?? {}), usedPercent: 101 } : primary,
-      secondary: selected === 'secondary' ? { ...(secondary ?? {}), usedPercent: 101 } : secondary,
+      primary: nextPrimary,
+      secondary: nextSecondary,
+      previousPrimaryUsedPercent: selected === 'primary' ? primary?.usedPercent : undefined,
+      previousSecondaryUsedPercent: selected === 'secondary' ? secondary?.usedPercent : undefined,
       source,
       eventId: createHash('sha256').update(`codex-usage-limit-hit\0${source}\0${entry['timestamp'] ?? ''}\0${payload['turn_id'] ?? ''}`).digest('hex'),
     }
@@ -538,6 +552,7 @@ export function processCodexRateLimitLine(
   }
   const signature = JSON.stringify([accountId, limitId, limitName, primary, secondary])
   state.lastRateLimitSnapshot = { limitId, limitName, primary, secondary }
+  state.lastRateLimitSignature = signature
   if (seenRateLimits) {
     if (previousSignature === signature) return null
     seenRateLimits.set(key, signature)
